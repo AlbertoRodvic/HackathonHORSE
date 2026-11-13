@@ -11,6 +11,8 @@ La solución distingue entre:
 
 El objetivo no es penalizar a la máquina que más se detiene, sino identificar la que genera un efecto dominó en el resto de la línea.
 
+**Criterio clave de priorización:** las máquinas paradas que no están en situación de DES ni de SAT son las más problemáticas. Al no estar su parada explicada por desabastecimiento o saturación, deben investigarse como posibles fallos propios.
+
 ## 📊 KPIs y métricas principales
 
 El modelo calcula automáticamente los indicadores de referencia para cada operación:
@@ -22,17 +24,34 @@ El modelo calcula automáticamente los indicadores de referencia para cada opera
 | **Frecuencia de Parada (Fpm)** | Número de paradas por cada mil piezas reales producidas. | `(NAP / NPR) * 1000` |
 | **Microparadas vs. averías** | Ratio para diferenciar atascos rápidos de averías graves. | `TAP / NAP` |
 
+## 🔎 EDA: análisis exploratorio de datos
+
+En este apartado recogeremos las consideraciones iniciales del análisis exploratorio de datos antes de definir y validar el modelo.
+
+### Consideraciones iniciales
+
+- **Estructura y cobertura:** revisar el número de registros, las líneas, operaciones y periodos incluidos en los datos.
+- **Calidad de datos:** identificar valores ausentes, duplicados, tipos incorrectos y valores fuera de rango.
+- **Distribuciones:** explorar `TBF`, `TAP`, `DES`, `SAT`, `NAP` y `NPR` para detectar patrones y posibles anomalías.
+- **Relación entre ficheros:** comprobar que cada combinación de `Linea` y `Operacion` de los datos de producción tenga correspondencia en la configuración y un `Orden_OP` válido.
+- **Paradas propias e inducidas:** analizar las máquinas paradas que no están en situación de DES ni de SAT, ya que son prioritarias para investigar como posibles fallos propios.
+- **Evolución temporal y posición en línea:** comparar los indicadores por día y por `Orden_OP` para buscar concentraciones de paradas y señales de propagación entre operaciones vecinas.
+
+### Observaciones del equipo
+
+> Añadiremos aquí los hallazgos del EDA, las hipótesis que queramos comprobar y las decisiones que afecten a la limpieza o al análisis.
+
 ## 🧠 Enfoque: algoritmo de propagación
 
 Para resolver el reto de forma original y escalable, proponemos un algoritmo que recorre la topología de la línea usando el `Orden_OP` de la tabla de configuración.
 
 Una máquina se considera una posible **máquina penalizante** cuando, durante un día de producción, se cumplen simultáneamente estas condiciones:
 
-1. Registra un tiempo alto de Parada Propia (TAP).
-2. Provoca Saturación (SAT) en la máquina inmediatamente anterior.
-3. Provoca Desabastecimiento (DES) en la máquina inmediatamente posterior.
+1. Está parada y no se encuentra en situación de DES ni de SAT; estas máquinas tienen prioridad de investigación.
+2. Registra un tiempo alto de Parada Propia (TAP).
+3. La propagación entre estaciones vecinas muestra Saturación (SAT) en la máquina inmediatamente anterior y Desabastecimiento (DES) en la inmediatamente posterior.
 
-El **Índice de Culpa** combina estas señales para ayudar al jefe de taller a priorizar la investigación del origen del problema.
+El **Índice de Culpa** combina estas señales para ayudar al jefe de taller a priorizar la investigación del origen del problema. La ausencia de DES y SAT identifica una parada que no parece estar inducida por las señales consideradas.
 
 ## ⚙️ Plan de acción: pipeline de datos
 
