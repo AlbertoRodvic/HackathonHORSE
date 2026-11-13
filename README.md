@@ -33,13 +33,21 @@ En este apartado recogeremos las consideraciones iniciales del análisis explora
 - **Estructura y cobertura:** revisar el número de registros, las líneas, operaciones y periodos incluidos en los datos.
 - **Calidad de datos:** identificar valores ausentes, duplicados, tipos incorrectos y valores fuera de rango.
 - **Distribuciones:** explorar `TBF`, `TAP`, `DES`, `SAT`, `NAP` y `NPR` para detectar patrones y posibles anomalías.
+- **Balance diario de tiempos:** sumar el tiempo de trabajo y el tiempo de parada de cada día y operación. Como referencia, el total esperado es de 22 horas; totales inferiores o superiores deben revisarse como posibles datos incompletos, duplicados o problemas de unidades.
+- **Microparadas y paradas largas:** comparar la duración de las paradas con su frecuencia. Las paradas largas pueden presentar menos FPM y menos NAP; conviene analizar también la duración media por parada (`TAP / NAP`) para distinguirlas de muchas microparadas.
 - **Relación entre ficheros:** comprobar que cada combinación de `Linea` y `Operacion` de los datos de producción tenga correspondencia en la configuración y un `Orden_OP` válido.
+- **Agrupación por operación:** realizar los cálculos y comparaciones por `Operacion` (cada pieza/estación del proceso), además de por día cuando corresponda, para no mezclar máquinas distintas.
 - **Paradas propias e inducidas:** analizar las máquinas paradas que no están en situación de DES ni de SAT, ya que son prioritarias para investigar como posibles fallos propios.
 - **Evolución temporal y posición en línea:** comparar los indicadores por día y por `Orden_OP` para buscar concentraciones de paradas y señales de propagación entre operaciones vecinas.
 
 ### Observaciones del equipo
 
 > Añadiremos aquí los hallazgos del EDA, las hipótesis que queramos comprobar y las decisiones que afecten a la limpieza o al análisis.
+
+## 📝 Por hacer
+
+1. **Registros señalados en el EDA:** revisar la tabla de registros con señal de revisión y contrastar sus valores con Excel. Hay valores contabilizados cuya precisión todavía no está confirmada.
+2. **Columna de fecha:** crear una columna de fecha que sustituya a `Year`, `Week` y `Jour` para facilitar el análisis temporal.
 
 ## 🧠 Enfoque: algoritmo de propagación
 
