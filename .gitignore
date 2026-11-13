@@ -1,0 +1,5 @@
+# Quitar la presentación del reto
+*.pptx
+
+# Quitar los datos
+data/
