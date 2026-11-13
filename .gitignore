@@ -45,3 +45,6 @@ outputs/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Project virtual environment
+HORSE/
