@@ -52,6 +52,18 @@ En este apartado recogeremos las consideraciones iniciales del análisis explora
 4. **Operaciones no registradas:** investigar por qué algunas operaciones de la cadena no aparecen en los datos, aunque sí formen parte del proceso.
 5. **Tiempo medio por parada:** añadir una columna calculada como `(TAP / NAP) * 60` para estimar el tiempo por parada y usarla como indicador adicional para distinguir microparadas de paradas largas.
 6. **Agrupación por zonas de fábrica:** investigar si las operaciones de `config_hackaton.csv` se pueden agrupar en zonas para identificar en qué partes de la fábrica se concentran las máquinas problemáticas. Validar cualquier agrupación propuesta con información fiable de la línea.
+7. **Frecuencia de microparadas:** comprobar si un FPM muy elevado identifica operaciones con muchas microparadas. Contrastar esta señal con la duración media por parada y definir umbrales con datos, ya que un FPM alto por sí solo no demuestra que sean microparadas.
+8. **Esquema visual de la línea:** crear un diagrama en el orden real de producción y colorear tanto la operación que origina una señal como la operación afectada: rojo para quien provoca SAT y amarillo para quien la sufre; morado para quien provoca DES y verde para quien la sufre. Usar el esquema de direcciones SAT/DES de la presentación del reto como hipótesis inicial y validar las conexiones con la topología real. Definir el periodo, la media y los umbrales usados para asignar colores; permitir señales múltiples cuando corresponda.
+9. **Análisis generalizable a otras líneas y periodos:** definir un método que incluya:
+   - Calendario de producción y operaciones que debían trabajar.
+   - TAP, DES y SAT como porcentaje del tiempo requerido, junto con disponibilidad, ciclo, frecuencia y duración media de las paradas.
+   - Clasificación de patrones: pérdidas propias, desabastecimiento, saturación, problemas mixtos o ciclo elevado.
+   - Objetivos configurables por línea u operación y comparación con periodos históricos equivalentes.
+   - Priorización según magnitud de las pérdidas, recurrencia y confianza en los datos.
+   - Recomendaciones explicables que distingan acciones de mantenimiento de problemas de flujo.
+   - Análisis de propagación que contraste TAP con SAT aguas arriba y DES aguas abajo, usando conexiones reales y respetando ramas paralelas. Con acumulados diarios, presentar solo indicios; demostrar causalidad requiere eventos con marcas temporales.
+10. **Operaciones lentas:** detectar operaciones con ciclo elevado que pueden tener un `NPR` bajo porque tardan mucho en producir, y distinguirlas de operaciones sin actividad o con falta de piezas.
+11. **Picking, kitting y causas humanas o logísticas:** localizar esas actividades en la línea y comprobar si una falta o demora de preparación/suministro deja operaciones posteriores en DES; estudiar también si la acumulación de producto puede causar SAT en operaciones anteriores. No atribuirlo a una persona ni clasificarlo como avería de máquina sin evidencias adicionales; contrastar con incidencias de material, registros de picking/kitting y marcas temporales. La lógica de bloqueo y desabastecimiento depende del flujo y los buffers, así que debe validarse para cada conexión.
 
 ## 🧠 Enfoque: algoritmo de propagación
 
