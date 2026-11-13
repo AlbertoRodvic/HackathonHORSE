@@ -1,5 +1,32 @@
 # 🏭 Reto LOSSIA: Detección Inteligente de Máquinas Penalizantes
 
+## Ejecutar el análisis local
+
+```powershell
+python -m pip install -r requirements.txt
+python -m streamlit run app.py
+```
+
+La aplicación lee los CSV de `data/` o permite cargar otros archivos desde la barra lateral.
+Incluye resumen por línea, operaciones coloreadas por patrón, duración media de parada,
+nube de posibles microparadas, evolución de TAP/DES/SAT y revisión de calidad.
+`cleaning.py` prepara y audita los registros; `analysis.py` calcula los indicadores sin depender de la interfaz.
+
+El calendario de fábrica es opcional: `Linea,Year,Week,Jour,Planned_Production`, con valores
+0 (cierre) o 1 (producción prevista), y `Planned_Hours` opcional en horas. Los días sin actividad
+no se consideran festivos automáticamente. Se pueden comparar todos los registros, excluir
+solo cierres confirmados o excluir provisionalmente días sin actividad pendientes de confirmar.
+Una parada total en un día con producción prevista se conserva. No se eliminan todas las filas con `TBF = 0`.
+
+La variable `mean_stop_minutes = TAP * 60 / NAP` usa TAP normalizado a horas y se calcula
+tras sumar el periodo por operación. Con NAP cero queda sin definir. Si los contadores diarios
+son incompatibles, se muestra la media con aviso y no se usa para clasificar posibles microparadas.
+Los colores resumen el periodo: no representan estados instantáneos ni demuestran causalidad.
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
 ## 🎯 El reto
 
 En la línea 5 de montaje de Valladolid, no todas las paradas son iguales. El objetivo de este proyecto es transformar los datos brutos de producción en un análisis end-to-end que permita al jefe de taller identificar rápidamente la causa real de las pérdidas de tiempo.
