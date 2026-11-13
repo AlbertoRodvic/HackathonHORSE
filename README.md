@@ -46,8 +46,12 @@ En este apartado recogeremos las consideraciones iniciales del análisis explora
 
 ## 📝 Por hacer
 
-1. **Registros señalados en el EDA:** revisar la tabla de registros con señal de revisión y contrastar sus valores con Excel. Hay valores contabilizados cuya precisión todavía no está confirmada.
+1. **Registros señalados en el EDA:** revisar la tabla de registros con señal de revisión y contrastar sus valores con Excel. Hay valores contabilizados cuya precisión todavía no está confirmada. Interpretar también los rangos de valores de las tablas para distinguir microparadas de paradas largas.
 2. **Columna de fecha:** crear una columna de fecha que sustituya a `Year`, `Week` y `Jour` para facilitar el análisis temporal.
+3. **Días sin actividad y festivos:** investigar por qué hay días sin actividad. La revisión manual indica que no todos coinciden con festivos. Para escalar el análisis a otras líneas, países, ciudades y periodos, habrá que usar calendarios de festivos adecuados a cada lugar y año e incluir los festivos establecidos por convenio en el gremio correspondiente.
+4. **Operaciones no registradas:** investigar por qué algunas operaciones de la cadena no aparecen en los datos, aunque sí formen parte del proceso.
+5. **Tiempo medio por parada:** añadir una columna calculada como `(TAP / NAP) * 60` para estimar el tiempo por parada y usarla como indicador adicional para distinguir microparadas de paradas largas.
+6. **Agrupación por zonas de fábrica:** investigar si las operaciones de `config_hackaton.csv` se pueden agrupar en zonas para identificar en qué partes de la fábrica se concentran las máquinas problemáticas. Validar cualquier agrupación propuesta con información fiable de la línea.
 
 ## 🧠 Enfoque: algoritmo de propagación
 
