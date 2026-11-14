@@ -64,7 +64,7 @@ def heading(text):
 
 def table(headers, rows, widths=None):
     content = [[p(x, "HeaderLossia") for x in headers]]
-    content += [[x if isinstance(x, Paragraph) else p(x, "CellLossia") for x in row] for row in rows]
+    content += [[x if isinstance(x, (Paragraph, Drawing)) else p(x, "CellLossia") for x in row] for row in rows]
     result = Table(content, colWidths=widths or [WIDTH / len(headers)] * len(headers), repeatRows=1, hAlign="LEFT")
     result.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), NAVY), ("VALIGN", (0, 0), (-1, -1), "TOP"),
@@ -119,6 +119,9 @@ def map_drawing(operations):
         color = STATUS_COLORS[row.status]
         drawing.add(Rect(x + 2, y + 3, cell_width - 4, row_height - 6, rx=4, ry=4,
                          fillColor=colors.HexColor(color), strokeColor=None))
+        if row.status == "Mixto":
+            drawing.add(Rect(x + cell_width / 2, y + 3, cell_width / 2 - 2, row_height - 6,
+                             fillColor=colors.HexColor(STATUS_COLORS["Desabastecimiento"]), strokeColor=None))
         drawing.add(String(x + cell_width / 2, y + 13, str(row.Operacion), fontName="Lossia-Bold",
                            fontSize=6.2, textAnchor="middle", fillColor=colors.HexColor(text_color(color))))
     return drawing
@@ -142,11 +145,12 @@ def _legend(settings):
         ("Sin datos", "Ningún registro utilizable en el periodo; no se sustituye por ceros."),
         ("Revisar datos", "Cobertura inferior al 100%, producción sin TBF o funcionamiento sin piezas en el agregado."),
         ("Sin producción", "NPR=0 y TBF=0. Confirmar si debía trabajar o sufrió una parada total."),
-        ("Mixto", "Dos o más señales: propia + DES/SAT, o DES + SAT. No se fuerza una causa única."),
-        ("Parada propia", f"Disponibilidad propia < {settings.availability_target:g}%, sin señal inducida."),
-        ("Desabastecimiento", f"Señal DES sin otras señales de parada. DES/TR >= {u:g}% o predominio inducido descrito abajo."),
-        ("Saturación", f"Señal SAT sin otras señales de parada. SAT/TR >= {u:g}% o predominio inducido descrito abajo."),
-        ("Buen funcionamiento", f"Disponibilidad propia >= {settings.availability_target:g}% sin señales DES/SAT. El ciclo sigue disponible como indicador."),
+        ("Mixto", f"TBF/TR < {settings.availability_target:g}% y dos o más señales: propia + DES/SAT, o DES + SAT."),
+        ("Parada propia", f"TBF/TR y disponibilidad propia < {settings.availability_target:g}%, sin señal inducida."),
+        ("Desabastecimiento", f"TBF/TR < {settings.availability_target:g}%. Señal DES sin otras señales; DES/TR >= {u:g}% o predominio inducido."),
+        ("Saturación", f"TBF/TR < {settings.availability_target:g}%. Señal SAT sin otras señales; SAT/TR >= {u:g}% o predominio inducido."),
+        ("Buen funcionamiento", f"Sin alertas de parada y ciclo <= {settings.cycle_target_cmin:g} cmin/pieza. Azul."),
+        ("Elementos lentos", f"Sin alertas de parada y ciclo > {settings.cycle_target_cmin:g} cmin/pieza. Azul grisáceo; no confirma una avería."),
     ]
     return [(name, description) for name, description in rows if name in STATUS_COLORS]
 
@@ -158,12 +162,46 @@ def legend_table(settings):
         background = STATUS_COLORS[name]
         style = ParagraphStyle(f"Legend{index}", parent=STYLES["CellLossia"],
                                textColor=colors.HexColor(text_color(background)))
-        content.append([Paragraph(escape(f"{index}. {name}"), style), rows[index - 1][1]])
+        label = Paragraph(escape(f"{index}. {name}"), style)
+        if name == "Mixto":
+            label = mixed_label(f"{index}. Mixto", 151)
+        content.append([label, rows[index - 1][1]])
     result = table(["Precedencia / color", "Condición y significado"], content, [165, WIDTH - 165])
     for index, (name, _) in enumerate(rows, start=1):
         background = STATUS_COLORS[name]
         result.setStyle(TableStyle([("BACKGROUND", (0, index), (0, index), colors.HexColor(background))]))
     return result
+
+
+def mixed_label(label, width):
+    drawing = Drawing(width, 22)
+    for x, color in [(0, STATUS_COLORS["Saturación"]), (width / 2, STATUS_COLORS["Desabastecimiento"])]:
+        drawing.add(Rect(x, 0, width / 2, 22, fillColor=colors.HexColor(color), strokeColor=None))
+    drawing.add(String(5, 7, label, fontName="Lossia-Bold", fontSize=8,
+                       fillColor=colors.HexColor(text_color(STATUS_COLORS["Mixto"]))))
+    return drawing
+
+
+def classification_report(settings, line, weeks, scenario):
+    """PDF breve que comparte las reglas y la leyenda del diagnóstico."""
+    return _build([
+        p("Criterios de clasificación y colores", "TitleLossia"),
+        p(f"Línea: {line}. Semanas: {', '.join(f'{year}-S{week}' for year, week in weeks)}. Escenario: {scenario}."),
+        heading("Umbrales y precedencia"),
+        p(f"Condición previa para TAP, DES y SAT: TBF/TR < {settings.availability_target:g}%. "
+          "Si el funcionamiento alcanza el objetivo no se activan señales de parada. Después se aplica la división por tipo de pérdida."),
+        p(f"Disponibilidad propia: 100 × TBF / (TBF + TAP); señal propia si es inferior a {settings.availability_target:g}%. "
+          f"DES o SAT: señal desde {settings.loss_threshold_pct:g}% de TR. Si solo su suma alcanza el umbral, "
+          "se aplica predominio 1,5; sin predominio se activan ambas señales. Dos o más señales producen Mixto."),
+        p(f"TR = TBF + TAP + DES + SAT. Ciclo = 6000 × TBF (h) / NPR. Dentro de Sin alertas, "
+          f"el ciclo divide buen funcionamiento y elementos lentos con objetivo {settings.cycle_target_cmin:g} cmin/pieza. "
+          "Los problemas de cobertura y coherencia tienen prioridad sobre la clasificación operativa."),
+        legend_table(settings),
+        heading("Lectura de los resultados"),
+        p("Mixto se representa mitad naranja y mitad amarillo. Los filtros de disponibilidad de datos "
+          "solo cambian las máquinas visibles. Las cajas muestran únicamente el nombre de la máquina. "
+          "Los colores resumen el periodo; las coincidencias diarias no prueban causalidad y un elemento lento no confirma una avería."),
+    ], "LOSSIA · Criterios de clasificación y colores")
 
 
 def technical_report(prepared, records, days, result, settings, scenario, *, connections=None, source_info=None, selected_weeks=None):
@@ -253,15 +291,16 @@ def technical_report(prepared, records, days, result, settings, scenario, *, con
               PageBreak(), heading("4 · El criterio unificado y la leyenda")]
     story += [p("Se aplica la misma función de clasificación a cualquier línea y periodo con este esquema. Primero se comprueba si el dato permite interpretar el estado; después se evalúan las señales propias e inducidas; finalmente, el ciclo. No se decide por el TAP absoluto más alto ni por el nombre de la máquina."),
               legend_table(settings),
-              p(f"Señal propia: disponibilidad < {settings.availability_target:g}%. "
+              p(f"Condición previa de cualquier señal: TBF/TR < {settings.availability_target:g}%. "
+                f"Después, señal propia: disponibilidad < {settings.availability_target:g}%. "
                 f"Señal DES y SAT: la componente alcanza {settings.loss_threshold_pct:g}%. Si ninguna lo alcanza por separado pero su suma sí, se asigna DES cuando DES >= 1,5 × SAT, SAT cuando SAT >= 1,5 × DES, y ambas si no hay predominio. "
                 "Las mismas señales alimentan filtros y recurrencia: un color inducido no queda fuera de su seguimiento por usar otra regla."),
               p("La media no modifica por sí sola el color principal. Señal de paradas frecuentes y breves: FPM >= P75 de operaciones comparables de la misma línea y media inferior al umbral breve. "
                 f"Umbrales actuales: breve < {settings.short_stop_minutes:g} min; prolongada >= {settings.long_stop_minutes:g} min; P25 distingue pocas y prolongadas. Son hipótesis ajustables, no diagnósticos de sensores ni inventario de eventos."),
               PageBreak(), heading("5 · Mapa de operaciones: lectura y navegación"),
               p("La vista de línea comienza por el mapa. Cada caja contiene exclusivamente el nombre y el color. Se recorre en una fila horizontal desplazable o se abre la cuadrícula completa. Al pulsar una caja, se muestra su evidencia debajo y se permite descargar el diagnóstico PDF."),
-              p("Orden de línea: Orden_OP y nombre para desempatar, sin inferir conexiones. Orden de urgencia: 3 = señales propias comparables; 2 = flujo/ciclo; 1 = revisión de datos o actividad; 0 = seguimiento. Dentro de cada grupo: mayor porcentaje de pérdida, más recurrencia, más TAP y orden de configuración. Es una cola de investigación, no una estimación causal de producción perdida."),
-              p("Los filtros de parada propia, DES y SAT se combinan como unión (cualquiera de los seleccionados). Una caja Mixto puede aparecer en más de un filtro. Sin filtros se incluyen todas las operaciones, incluso ausentes o sin producción. La leyenda proporciona el significado del color sin recargar las cajas.")]
+              p("Orden de línea: Orden_OP y nombre para desempatar, sin inferir conexiones. Orden de urgencia: 3 = señales propias comparables; 2 = flujo; 1 = revisión de datos o actividad; 0 = seguimiento. Dentro de cada grupo: mayor porcentaje de pérdida, más recurrencia, más TAP y orden de configuración. Es una cola de investigación, no una estimación causal de producción perdida."),
+              p("Por orden de línea se muestran todas las operaciones. Por disponibilidad de datos se elige entre Con datos, Revisar datos (incluye Sin producción) y Sin datos. Para máquinas con datos se puede ordenar por urgencia y seleccionar un tipo de señal, incluido Mixto. Sin alertas reúne Buen funcionamiento y Elementos lentos, con un filtro adicional entre ambos. Los filtros no cambian el color. La leyenda conserva el nombre de las categorías fuera de las cajas.")]
     for line, operations in result.operations.groupby("Linea"):
         operations = order_operations(operations)
         for start in range(0, len(operations), 126):
@@ -344,7 +383,7 @@ def technical_report(prepared, records, days, result, settings, scenario, *, con
                   ["Pruebas sintéticas", "Duplicados, unidades, medias ponderadas, calendario, cobertura, varias líneas, señales inducidas y PDF. Verifican reglas, no la verdad de las causas industriales."],
                   ["Límite de datos", "El contrato es diario, con tablas en memoria. Grandes volúmenes, turnos o eventos requieren otra granularidad y evaluar rendimiento."],
               ], [140, WIDTH - 140]),
-              p("Validación pendiente con la planta: significado de los contadores, calendario de trabajo, actividad prevista por operación, objetivos del 90% y ciclo, topología y umbrales de microparadas. FPM acordado por 1000 piezas. "
+              p("Validación pendiente con la planta: significado de los contadores, calendario de trabajo, actividad prevista por operación, objetivos de disponibilidad y ciclo, topología y umbrales de microparadas. FPM acordado por 1000 piezas. "
                 "Para comprobar que una actuación evita repetición se necesitan datos posteriores e incidencias comparables; no se predicen fallos con cuatro semanas de agregados."),
               PageBreak(), heading("Fuentes y parámetros del informe"), p(_scope(records, days, scenario)), _source_table(source_info),
               table(["Parámetro", "Valor"], [[k, str(v)] for k, v in asdict(settings).items()], [300, WIDTH - 300])]
@@ -392,7 +431,12 @@ def diagnostic_story(operations, records, settings, connections=None):
 def operation_report(row, records, days, settings, scenario, *, connections=None, source_info=None):
     selected = records.loc[records.Linea.eq(row.Linea) & records.Operacion.eq(row.Operacion)].sort_values(DAY_KEYS)
     color = STATUS_COLORS[row['status']]
-    status = table(["Operación", "Estado del periodo"], [[row.Operacion, row['status']]], [WIDTH / 2] * 2)
+    if row['status'] == "Mixto":
+        label = mixed_label("Mixto", WIDTH / 2 - 14)
+    else:
+        style = ParagraphStyle("StatusLabel", parent=STYLES["CellLossia"], textColor=colors.HexColor(text_color(color)))
+        label = Paragraph(escape(row['status']), style)
+    status = table(["Operación", "Estado del periodo"], [[p(row.Operacion, "CellLossia"), label]], [WIDTH / 2] * 2)
     status.setStyle(TableStyle([("BACKGROUND", (1, 1), (1, 1), colors.HexColor(color))]))
     story = [p(f"Diagnóstico · {row.Operacion}", "TitleLossia"), p(f"Línea: {row.Linea} · Orden configurado: {row.Orden_OP:g}"),
              status, Spacer(1, 12), p(_scope(selected, days.loc[days.Linea.eq(row.Linea)], scenario)),
@@ -435,6 +479,14 @@ def operation_report(row, records, days, settings, scenario, *, connections=None
                  fmt(r.NAP, 0), fmt(r.NPR, 0)] for r in selected.itertuples()]
         story.append(table(["Registro", "Periodo", "TBF h", "TAP h", "DES h", "SAT h", "NAP", "NPR"], rows,
                            [44, 104, 55, 55, 55, 55, 70, WIDTH - 438]))
+        story += [heading("Balance horario de los registros diarios"),
+                  p("Balance = TBF + TAP + DES + SAT frente a la referencia de cada jornada. "
+                    "Las etiquetas orientan la revisión de planificación, categorías y captura; no confirman una avería.")]
+        balance_rows = [[str(int(r.Source_Row)), r.Periodo, fmt(r.recorded_hours), fmt(r.reference_hours),
+                         fmt(r.balance_delta_minutes), fmt(r.balance_band_minutes), r.balance_label]
+                        for r in selected.itertuples()]
+        story.append(table(["Registro", "Periodo", "Horas registradas", "Horas referencia", "Desvío min", "Banda ± min", "Etiqueta"],
+                           balance_rows, [44, 100, 65, 65, 55, 55, WIDTH - 384]))
     story += [heading("Fuentes y parámetros"), _source_table(source_info),
               table(["Parámetro", "Valor"], [[k, str(v)] for k, v in asdict(settings).items()], [300, WIDTH - 300])]
     return _build(story, f"LOSSIA · Diagnóstico de {row.Operacion}")

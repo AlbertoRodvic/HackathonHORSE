@@ -8,12 +8,13 @@ import pandas as pd
 from cleaning import BALANCE_COUNT_COLUMNS, DAY_KEYS, FLAGS, OP_KEYS, TIMES, VALUES, balance_counts
 
 STATUS_COLORS = {
-    "Desabastecimiento": "#20b8d8", "Saturación": "#a060d0",
-    "Parada propia": "#dc4848", "Buen funcionamiento": "#339d78",
-    "Mixto": "#608cd4", "Otros": "#98a4b5",
-    "Sin producción": "#98a4b5", "Revisar datos": "#98a4b5", "Sin datos": "#98a4b5",
+    "Parada propia": "#d94a4a", "Desabastecimiento": "#f2cf52", "Saturación": "#f08a35",
+    "Mixto": "#f08a35", "Sin alertas": "#339d78", "Buen funcionamiento": "#428bca",
+    "Elementos lentos": "#536579", "Otros": "#98a4b5", "Sin producción": "#98a4b5",
+    "Revisar datos": "#667085", "Sin datos": "#b8c0cc",
 }
-TIME_COLORS = {"TBF": STATUS_COLORS["Buen funcionamiento"], "TAP": STATUS_COLORS["Parada propia"],
+MIXED_BACKGROUND = "linear-gradient(90deg, #f08a35 0 50%, #f2cf52 50% 100%)"
+TIME_COLORS = {"TBF": STATUS_COLORS["Sin alertas"], "TAP": STATUS_COLORS["Parada propia"],
                "DES": STATUS_COLORS["Desabastecimiento"], "SAT": STATUS_COLORS["Saturación"]}
 OTHER_STATUSES = ("Sin producción", "Revisar datos", "Sin datos")
 
@@ -101,7 +102,8 @@ def signal_conditions(frame, settings):
     balanced = combined & ~dominant_des & ~dominant_sat
     des = des | (combined & dominant_des) | balanced
     sat = sat | (combined & dominant_sat) | balanced
-    return own, des, sat
+    below_target = frame.TBF_pct.lt(settings.availability_target)
+    return own & below_target, des & below_target, sat & below_target
 
 
 def classify(operations, settings):
@@ -117,6 +119,8 @@ def classify(operations, settings):
          (own & (des | sat)) | (des & sat), own, des, sat],
         ["Sin datos", "Revisar datos", "Sin producción", "Revisar datos", "Mixto",
          "Parada propia", "Desabastecimiento", "Saturación"], default="Buen funcionamiento")
+    slow = result.status.eq("Buen funcionamiento") & result.cycle_cmin.gt(settings.cycle_target_cmin)
+    result.loc[slow, "status"] = "Elementos lentos"
     result["frequency_p75"] = np.nan
     result["frequency_p25"] = np.nan
     valid = result.eligible & result.stop_duration_reliable
@@ -164,14 +168,17 @@ def state_explanation(row, settings):
     own, des, sat = signal_conditions(pd.DataFrame([row]), settings)
     reasons = [f"TBF/TR: {row.TBF_pct:.2f}%; TAP/TR: {row.TAP_pct:.2f}%; "
                f"DES/TR: {row.DES_pct:.2f}%; SAT/TR: {row.SAT_pct:.2f}%."]
+    reasons.append(f"Solo se activan señales de parada si TBF/TR < {settings.availability_target:g}%. "
+                   "Al alcanzar el objetivo no se asignan señales TAP, DES ni SAT.")
     reasons.append(f"Señal propia: {'sí' if own.iloc[0] else 'no'}; disponibilidad propia "
                    f"{row.availability_pct:.2f}% frente al objetivo de {settings.availability_target:g}%.")
     reasons.append(f"Señal DES: {'sí' if des.iloc[0] else 'no'}; señal SAT: {'sí' if sat.iloc[0] else 'no'}. "
                    f"Umbral individual {settings.loss_threshold_pct:g}%. Si solo la suma inducida lo supera, "
                    "se usa predominio 1,5 o ambas señales cuando están equilibradas.")
-    reasons.append("Dos o más señales propias/inducidas producen estado Mixto. Buen funcionamiento indica "
-                   f"disponibilidad propia ≥ {settings.availability_target:g}% sin señales DES/SAT. "
-                   "El ciclo permanece como indicador, sin categoría de color.")
+    reasons.append("Dos o más señales propias/inducidas producen estado Mixto. Sin alertas indica "
+                   "que no se activan señales de parada con los criterios del periodo. "
+                   f"Dentro de Sin alertas, ciclo ≤ {settings.cycle_target_cmin:g} cmin/pieza indica buen funcionamiento; "
+                   "un ciclo superior indica elementos lentos, sin atribuir una avería.")
     return reasons
 
 
@@ -205,6 +212,7 @@ def propagation_evidence(operation, records, settings, connections=None):
         return pd.DataFrame(columns=["Operacion", "Hipótesis", "Señal", "Días coincidentes", "Horas coincidentes", "Distancia"])
     tr = data[TIMES].sum(axis=1)
     data["availability_pct"] = 100 * _ratio(data.TBF, data.TBF + data.TAP)
+    data["TBF_pct"] = 100 * _ratio(data.TBF, tr)
     for kind in ["TAP", "DES", "SAT"]:
         data[f"{kind}_pct"] = 100 * _ratio(data[kind], tr)
     data["induced_pct"] = data.DES_pct + data.SAT_pct
@@ -255,6 +263,7 @@ def recommendation(row):
         "Desabastecimiento": "Revisar suministro y operaciones que alimentan este puesto.",
         "Saturación": "Revisar salida, buffers y operaciones receptoras.",
         "Mixto": "Separar las incidencias propias de las esperas externas antes de intervenir.",
+        "Elementos lentos": "Revisar el ciclo y las condiciones de operación; un ciclo alto no confirma una avería.",
         "Buen funcionamiento": "Mantener el seguimiento de disponibilidad y el mantenimiento preventivo.",
         "Sin producción": "Confirmar si debía trabajar; puede estar no planificada o totalmente parada.",
         "Revisar datos": "Revisar cobertura y coherencia de tiempos y contadores antes de comparar.",

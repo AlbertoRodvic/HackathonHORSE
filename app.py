@@ -12,10 +12,10 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from analysis import (Settings, STATUS_COLORS, TIME_COLORS, analyse, order_operations, priorities,
-                      OTHER_STATUSES, map_categories, propagation_evidence, state_explanation, validate_connections)
+from analysis import (Settings, STATUS_COLORS, MIXED_BACKGROUND, TIME_COLORS, analyse, order_operations, priorities,
+                      OTHER_STATUSES, map_categories, propagation_evidence, validate_connections)
 from cleaning import BALANCE_LABELS, DAY_KEYS, DAY_LABELS, FLAGS, TIMES, VALUES, prepare_data, select_scenario
-from reports import operation_report, technical_report, text_color
+from reports import operation_report, technical_report, classification_report, text_color
 from diagnostics import (critical_candidates, impact_pairs, impact_summary, microstop_assessment,
                          investigation_figure, priority_figure, total_stops)
 
@@ -94,8 +94,7 @@ def open_line(line):
     st.session_state["line"] = line
     st.session_state["section"] = "Operaciones"
     st.session_state["selected_operation"] = None
-    st.session_state["map_filters"] = []
-    st.session_state["map_balance_filter"] = "Todos"
+    st.session_state["map_data_group"] = "Con datos"
 
 
 def open_summary():
@@ -108,7 +107,6 @@ def open_operation(operation):
 
 def reset_operation():
     st.session_state["selected_operation"] = None
-    st.session_state["map_filters"] = []
 
 
 def toggle_map():
@@ -143,15 +141,15 @@ def others_view(operations, settings):
     others = operations.loc[operations.status.isin(OTHER_STATUSES)]
     if others.empty:
         return
-    st.subheader("Revisión prioritaria")
+    st.header("Revisión prioritaria")
     st.warning(f"{len(others)} operaciones requieren revisión de planificación o datos. "
                "Confirmar estos casos antes de interpretar sus pérdidas como averías.")
     actions = {
-        "Sin producción": ("Sin producción", "Jefe de Unidad: confirmar si estas máquinas debían producir y su planificación. "
+        "Sin producción": ("Sin producción", "Confirmar si estas máquinas debían producir y su planificación. "
                            "Mantenimiento: si debían trabajar, investigar la parada total y registrar la causa."),
-        "Revisar datos": ("Revisar datos", "Jefe de Unidad: completar las jornadas que faltan y contrastar la producción registrada. "
+        "Revisar datos": ("Revisar datos", "Completar las jornadas que faltan y contrastar la producción registrada. "
                          "Mantenimiento: comprobar contadores, sensores y coherencia de los tiempos."),
-        "Sin datos": ("Sin datos", "Jefe de Unidad: confirmar si las máquinas estaban previstas y localizar sus registros. "
+        "Sin datos": ("Sin datos", "Confirmar si las máquinas estaban previstas y localizar sus registros. "
                      "Mantenimiento: revisar la captura de datos si faltan registros de máquinas que estaban activas."),
     }
     for status, (label, action) in actions.items():
@@ -199,33 +197,42 @@ def operations_view(operations, records, days, settings, scenario, connections, 
     st.caption(f"Línea: {operations.Linea.iloc[0]}")
     st.caption("Cada caja es una operación. Desliza la fila o abre la vista completa; pulsa una caja para ver su diagnóstico debajo.")
     controls = st.columns([1.1, 1.8, 1.2])
-    ordering = controls[0].selectbox("Ordenar por", ["Orden de línea", "Urgencia"], key="map_order")
-    categories = map_categories(operations)
-    available = [name for name in STATUS_COLORS if name in set(categories)]
-    filters = controls[1].multiselect("Filtrar por categoría", available, key="map_filters")
+    sort_mode = controls[0].selectbox("Organizar máquinas", ["Por orden de línea", "Por disponibilidad de datos"], key="map_organization")
+    available = [name for name in STATUS_COLORS if name in set(map_categories(operations))]
+    visible = order_operations(operations)
+    if sort_mode == "Por disponibilidad de datos":
+        availability_group = controls[1].selectbox("Disponibilidad de datos", ["Con datos", "Revisar datos", "Sin datos"], key="map_data_group")
+        if availability_group == "Con datos":
+            visible = visible.loc[visible.eligible]
+            order_mode = st.selectbox("Orden para máquinas con datos", ["Por orden de línea", "Por urgencia de reparación"], key="map_order")
+            if order_mode == "Por urgencia de reparación":
+                repair_group = st.selectbox("Tipo de señal", ["Todas", "Parada propia", "Desabastecimiento", "Saturación", "Mixto", "Sin alertas"], key="map_signal")
+                if repair_group == "Sin alertas":
+                    visible = visible.loc[visible.status.isin(["Buen funcionamiento", "Elementos lentos"])]
+                    detail = st.selectbox("Dentro de Sin alertas", ["Todos", "Buen funcionamiento", "Elementos lentos"], key="map_no_alerts")
+                    if detail != "Todos":
+                        visible = visible.loc[visible.status.eq(detail)]
+                elif repair_group != "Todas":
+                    visible = visible.loc[visible.status.eq(repair_group)]
+                visible = order_operations(visible, urgent=True)
+        elif availability_group == "Revisar datos":
+            visible = visible.loc[visible.status.isin(["Revisar datos", "Sin producción"])]
+        else:
+            visible = visible.loc[visible.status.eq("Sin datos")]
     with controls[2]:
         st.write("")
         st.button("Volver a fila horizontal" if st.session_state.get("map_expanded", False) else "Ver todas en pantalla",
                   key="toggle_map", on_click=toggle_map, width="stretch")
-    visible = order_operations(operations, urgent=ordering == "Urgencia")
-    if filters:
-        visible = visible.loc[map_categories(visible).isin(filters)]
-    balance_filter = st.selectbox("Balance horario del mapa", ["Todos", "Con balance por revisar", "Operaciones completas en banda"], key="map_balance_filter")
-    if balance_filter == "Con balance por revisar":
-        visible = visible.loc[visible.balance_review_days.gt(0)]
-    elif balance_filter == "Operaciones completas en banda":
-        visible = visible.loc[visible.balance_review_days.eq(0) & visible.observed_days.gt(0) & visible.coverage_pct.eq(100)]
-    st.caption("El filtro de balance solo cambia las operaciones visibles: conserva los registros y los cálculos. Los colores siguen indicando el patrón operativo.")
     if "Zona" in visible and visible.Zona.notna().any():
         zone = st.selectbox("Zona documentada", ["Todas"] + sorted(visible.Zona.dropna().unique().tolist()))
         if zone != "Todas":
             visible = visible.loc[visible.Zona.eq(zone)]
     present = set(map_categories(visible))
-    legend = " · ".join(f'<span style="color:{STATUS_COLORS[status]}">● {escape(status)}</span>'
+    legend = " · ".join(f'<span style="display:inline-block;width:12px;height:12px;background:{MIXED_BACKGROUND if status == "Mixto" else STATUS_COLORS[status]}"></span> {escape(status)}'
                         for status in available if status in present)
     st.markdown(legend, unsafe_allow_html=True)
     st.caption(f"Mostrando {len(visible)} de {len(operations)} operaciones. "
-               + ("Se muestran las categorías seleccionadas. " if filters else "Sin filtros: se muestran todas. ")
+               + "Los filtros de disponibilidad no cambian los colores. "
                + "El orden no implica conexión física; el color resume el periodo, no el estado instantáneo.")
     expanded = st.session_state.get("map_expanded", False)
     selected = st.session_state.get("selected_operation")
@@ -236,8 +243,8 @@ def operations_view(operations, records, days, settings, scenario, connections, 
     def tile(row):
         identity = sha256(f"{row.Linea}\0{row.Operacion}".encode()).hexdigest()[:16]
         key = f"map_tile_{identity}"
-        background = STATUS_COLORS[row['status']]
-        foreground = text_color(background)
+        background = MIXED_BACKGROUND if row["status"] == "Mixto" else STATUS_COLORS[row["status"]]
+        foreground = text_color(STATUS_COLORS[row["status"]])
         outline = "3px solid #182b49" if row.Operacion == selected else "1px solid transparent"
         styles.append(f".st-key-{key} button{{background:{background}!important;color:{foreground}!important;"
                       f"border:{outline}!important;border-radius:8px;min-height:54px;font-weight:700;"
@@ -247,7 +254,7 @@ def operations_view(operations, records, days, settings, scenario, connections, 
         with st.container(key=key, width="stretch" if expanded else 142):
             st.button(str(row.Operacion), key=f"operation_{identity}", width="stretch",
                       on_click=open_operation, args=(row.Operacion,),
-                      help=f"{row['status']} · Orden {row.Orden_OP:g} · Balance por revisar: {int(row.balance_review_days)}/{int(row.observed_days)} registros")
+                      help=f"{row['status']} · Orden {row.Orden_OP:g}")
     if visible.empty:
         st.info("Ninguna operación cumple estos filtros. Quita un filtro para ampliar la vista.")
     elif expanded:
@@ -260,9 +267,13 @@ def operations_view(operations, records, days, settings, scenario, connections, 
             for _, row in visible.iterrows():
                 tile(row)
     st.markdown("<style>" + "".join(styles) + "</style>", unsafe_allow_html=True)
-    below = operations.loc[operations.eligible & operations.availability_pct.lt(settings.availability_target)]
+    st.download_button("Descargar criterios de clasificación y colores",
+                       classification_report(settings, operations.Linea.iloc[0],
+                                             sorted(set(zip(days.Year, days.Week))), scenario),
+                       file_name="criterios_clasificacion_lossia.pdf", mime="application/pdf", on_click="ignore")
+    below = operations.loc[operations.eligible & operations.TBF_pct.lt(settings.availability_target)]
     if not below.empty:
-        st.subheader(f"Máquinas con disponibilidad propia < {settings.availability_target:g}% · {len(below)}")
+        st.subheader(f"Máquinas con funcionamiento / TR < {settings.availability_target:g}% · {len(below)}")
         plot(investigation_figure(below, settings))
     others_view(operations, settings)
     if selected is None:
@@ -271,19 +282,24 @@ def operations_view(operations, records, days, settings, scenario, connections, 
         st.divider()
         row = operations.loc[operations.Operacion.eq(selected)].iloc[0]
         diagnostic(row, settings)
-        with st.expander("Por qué tiene este color"):
-            for reason in state_explanation(row, settings):
-                st.write(reason)
-        pdf = operation_report(row, records, days, settings, scenario, connections=connections, source_info=sources)
-        filename = "diagnostico_" + sha256(f"{row.Linea}/{selected}".encode()).hexdigest()[:10] + ".pdf"
-        st.download_button("Descargar diagnóstico PDF", pdf, file_name=filename, mime="application/pdf", on_click="ignore", type="primary")
         with st.expander("Posibles efectos sobre otras operaciones y fuentes de espera"):
             st.caption("Coincidencias diarias, no causalidad demostrada. Sin conexiones aportadas no se conoce la dirección del efecto.")
             evidence = propagation_evidence(row, records, settings, connections)
-            table(evidence)
-        st.subheader("Registros diarios de la operación seleccionada")
-        selected_records = records.loc[records.Operacion.eq(selected)]
-        hour_balance_view(selected_records, key="operation_balance")
+            effect_signals = {"Todos": None, "Desabastecimiento en otras operaciones (DES)": "DES",
+                              "Saturación en otras operaciones (SAT)": "SAT", "Fuentes de espera de la seleccionada (TAP)": "TAP"}
+            effect = st.selectbox("Filtrar por tipo de efecto", list(effect_signals), key="operation_effect")
+            signal = effect_signals[effect]
+            if signal is not None:
+                evidence = evidence.loc[evidence["Señal"].eq(signal)]
+            if evidence.empty:
+                st.info("No hay coincidencias para este tipo de efecto en el periodo seleccionado.")
+            displayed_evidence = evidence.drop(columns=["Distancia"]).copy()
+            displayed_evidence["Hipótesis"] = displayed_evidence["Hipótesis"].str.replace(
+                "; conexión por confirmar", "", regex=False)
+            table(displayed_evidence)
+        pdf = operation_report(row, records, days, settings, scenario, connections=connections, source_info=sources)
+        filename = "diagnostico_" + sha256(f"{row.Linea}/{selected}".encode()).hexdigest()[:10] + ".pdf"
+        st.download_button("Descargar diagnóstico PDF", pdf, file_name=filename, mime="application/pdf", on_click="ignore", type="primary")
 
 
 def own_losses_view(operations, records, settings, connections):
@@ -475,53 +491,18 @@ def report_view(prepared, records, days, result, settings, scenario, sources, co
             ("Gris · Revisar datos", "Cobertura incompleta o tiempos y producción contradictorios."),
             ("Gris · Sin producción", "NPR=0 y TBF=0: confirmar actividad prevista o parada total."),
             ("Rojo · Parada propia", f"Disponibilidad < {settings.availability_target:g}%, sin señales inducidas."),
-            ("Cian · DES", "Señal de falta de suministro sin otra señal de parada."),
-            ("Violeta · SAT", "Señal de bloqueo de salida sin otra señal de parada."),
-            ("Azul · Mixto", "Señales propias e inducidas, o DES y SAT a la vez."),
-            ("Verde · Buen funcionamiento", f"Disponibilidad ≥ {settings.availability_target:g}% sin señales DES/SAT."),
+            ("Amarillo · DES", "Señal de falta de suministro sin otra señal de parada."),
+            ("Naranja · SAT", "Señal de bloqueo de salida sin otra señal de parada."),
+            ("Naranja y amarillo · Mixto", "Señales propias e inducidas, o DES y SAT a la vez."),
+            ("Azul · Buen funcionamiento", f"Sin alertas de parada y ciclo ≤ {settings.cycle_target_cmin:g} cmin/pieza."),
+            ("Azul grisáceo · Elementos lentos", f"Sin alertas de parada y ciclo > {settings.cycle_target_cmin:g} cmin/pieza."),
         ]]))
     st.write(f"DES o SAT se activan al alcanzar {settings.loss_threshold_pct:g}% de TR. "
              "Si solo la suma supera el umbral, se usa predominio 1,5; si no hay predominio, se activan ambas señales.")
+    st.write(f"Antes de distinguir TAP, DES y SAT se exige TBF/TR < {settings.availability_target:g}%. "
+             "Si el funcionamiento alcanza el objetivo, no se activa ninguna señal de parada.")
     st.write("La urgencia ordena primero pérdidas propias comparables, después flujo, revisión de datos y seguimiento. "
              "Dentro de cada grupo prioriza porcentaje de pérdida, recurrencia y horas TAP. No estima responsabilidad causal.")
-
-
-def interpretation_view(operations, settings, analysis):
-    with st.expander("Cómo interpretar los resultados"):
-        explanations = {
-            "Parada propia": "Rojo: disponibilidad propia inferior al 90%.",
-            "Buen funcionamiento": "Verde: disponibilidad propia ≥ 90% sin señales de desabastecimiento o saturación.",
-            "Desabastecimiento": "Cian: señal de falta de suministro (DES).",
-            "Saturación": "Violeta: señal de bloqueo de salida (SAT).",
-            "Mixto": "Azul, mezcla de cian y violeta: dos o más señales propias o inducidas coinciden.",
-            "Otros": "Gris: sin producción, revisión de datos o sin datos. Consulta las acciones debajo del mapa.",
-        }
-        for status in STATUS_COLORS:
-            if status in set(map_categories(operations)):
-                st.write(explanations[status])
-        st.write("Disponibilidad propia = TBF / (TBF + TAP) × 100. "
-                 "El color resume el periodo seleccionado; no representa el estado instantáneo.")
-        st.write(f"DES y SAT se activan desde {settings.loss_threshold_pct:g}% del tiempo registrado. "
-                 "Si solo su suma alcanza el umbral, se usa predominio 1,5; sin predominio se señalan ambas.")
-        if st.session_state.get("selected_operation") is not None:
-            st.write(f"Media de parada = TAP (h) × 60 / NAP; FPM = NAP / NPR × {settings.stop_rate_base}; "
-                     "ciclo = TBF (h) × 6.000 / NPR. Un denominador cero deja el indicador sin definir.")
-        if analysis == "Microparadas":
-            st.write(f"FPM = NAP / NPR × {settings.stop_rate_base}. Media de parada = TAP (h) × 60 / NAP. "
-                     f"Los indicios combinan frecuencia ≥ P75 de la línea y media < {settings.short_stop_minutes:g} min "
-                     "con datos consistentes. Los agregados diarios no confirman microparadas individuales.")
-        elif analysis == "Evolución":
-            st.write("Las barras muestran el reparto diario de horas-máquina. La recurrencia cuenta semanas evaluables "
-                     "con señal; no permite saber si fue la misma avería o varios eventos.")
-        elif analysis == "Calendario y calidad":
-            st.write("El escenario determina qué días se incluyen. Sin datos no significa producción cero. "
-                     "Confirma los cierres con la planificación de fábrica; Year/Week/Jour identifican días registrados.")
-        elif analysis == "Reparto de tiempos por operación":
-            st.write("Cada barra reparte TR = TBF + TAP + DES + SAT: funcionamiento, parada propia, "
-                     "desabastecimiento y saturación. Cada porcentaje divide su tiempo por TR.")
-        else:
-            st.write("La tabla ordena las pérdidas propias comparables por TAP/TR, recurrencia y horas TAP. "
-                     "Las coincidencias con otras operaciones orientan la investigación y no demuestran causalidad.")
 
 
 def main():
@@ -543,8 +524,8 @@ def main():
             unit = st.selectbox("Unidad de los tiempos de entrada", ["hours", "minutes", "seconds"],
                                 format_func=lambda value: {"hours": "Horas", "minutes": "Minutos", "seconds": "Segundos"}[value])
         with st.expander("Objetivos y umbrales"):
-            availability = 90.0
-            st.caption("Objetivo de disponibilidad propia: 90%.")
+            availability = st.number_input("Objetivo de disponibilidad propia (%)", 1.0, 100.0, 90.0)
+            st.caption("Este objetivo también exige TBF/TR inferior al umbral para activar señales TAP, DES o SAT.")
             cycle = st.number_input("Objetivo de ciclo (cmin/pieza)", 0.1, value=80.0)
             loss = st.number_input("Señal de pérdida sobre TR (%)", 0.1, 100.0, 10.0)
             short = st.number_input("Parada breve: media inferior a (min)", 0.1, 10.0, 2.0)
@@ -616,7 +597,8 @@ def main():
         st.download_button("Descargar indicadores de esta línea", operations.to_csv(index=False).encode("utf-8-sig"),
                            file_name=f"indicadores_{line}.csv", mime="text/csv", key=f"download_line_{line}")
         st.divider()
-        analysis = st.radio("Análisis de la línea", ANALYSES, horizontal=True, key="line_analysis")
+        st.header("Análisis de la línea")
+        analysis = st.radio("Análisis de la línea", ANALYSES, horizontal=True, key="line_analysis", label_visibility="collapsed")
         if analysis == "Microparadas":
             microstop_view(operations, settings, line_records)
         elif analysis == "Evolución":
@@ -628,7 +610,6 @@ def main():
             time_mix(operations.loc[operations.TR.gt(0)])
         else:
             own_losses_view(operations, line_records, settings, connections)
-        interpretation_view(operations, settings, analysis)
 
 
 if __name__ == "__main__":
