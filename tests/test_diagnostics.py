@@ -7,10 +7,49 @@ import pandas as pd
 from analysis import Settings, analyse
 from cleaning import DAY_KEYS, ROW_KEYS, VALUES, prepare_data, select_scenario
 from diagnostics import (critical_candidates, impact_pairs, impact_summary, microstop_assessment,
-                         investigation_figure, priority_figure, total_stops)
+                         investigation_figure, priority_figure, total_stops, microstop_points,
+                         microstop_figure, stop_action_plan, recurrence_matrix)
 
 
 class DiagnosticTests(unittest.TestCase):
+    def test_runtime_chart_uses_the_same_metric_as_its_filter(self):
+        _, _, result = self.fixture()
+        operations = result.operations.loc[result.operations.eligible & result.operations.TBF_pct.lt(90)]
+        fig = investigation_figure(operations, Settings(), metric="TBF_pct")
+        expected = operations.sort_values(["TBF_pct", "Operacion"])
+        self.assertEqual([p.get_width() for p in fig.axes[0].patches], expected.TBF_pct.tolist())
+        self.assertTrue(all(p.get_width() < 90 for p in fig.axes[0].patches))
+        self.assertEqual(fig.axes[0].get_xlabel(), "Funcionamiento / TR (%)")
+        self.assertNotEqual(expected.TBF_pct.tolist(), expected.availability_pct.tolist())
+
+    def test_microstop_plot_is_one_point_per_operation_and_rejects_duplicates(self):
+        _, _, result = self.fixture()
+        # La operación A tiene media fiable en el periodo; los días no son puntos adicionales.
+        points = microstop_points(result.operations)
+        fig = microstop_figure(result.operations, Settings())
+        self.assertEqual(len(fig.axes[0].collections[0].get_offsets()), len(points))
+        self.assertLessEqual(len(points), result.operations.Operacion.nunique())
+        with self.assertRaises(ValueError):
+            microstop_points(pd.concat([result.operations, result.operations.iloc[[0]]]))
+
+    def test_action_template_covers_four_disjoint_cases(self):
+        operations = pd.DataFrame({"Linea": ["L"] * 4, "Operacion": list("ABCD"), "eligible": [True] * 4,
+            "stop_duration_reliable": [True] * 4, "mean_stop_minutes": [1, 5, 1, 5],
+            "fpm": [100, 100, 10, 10], "frequency_p75": [50] * 4, "TAP": [4, 3, 2, 1],
+            "short_frequent_signal": [True, False, False, False]})
+        cases = stop_action_plan(operations, Settings())
+        self.assertEqual([c["count"] for c in cases], [1, 1, 1, 1])
+        self.assertEqual([c["operations"] for c in cases], list("ABCD"))
+        self.assertEqual(sum(c["tap_hours"] for c in cases), 10)
+
+    def test_recurrence_only_keeps_significant_comparable_operations(self):
+        _, _, result = self.fixture()
+        weekly = result.weekly.copy()
+        matrix = recurrence_matrix(weekly, "DES", Settings())
+        self.assertEqual(matrix.index.tolist(), ["B"])
+        weekly.loc[weekly.Operacion.eq("B"), "eligible"] = False
+        self.assertTrue(recurrence_matrix(weekly, "DES", Settings()).empty)
+
     def fixture(self):
         config = pd.DataFrame([["L", "A", 1], ["L", "B", 2], ["L", "X", 2], ["L", "MISSING", 3]],
                               columns=["Linea", "Operacion", "Orden_OP"])

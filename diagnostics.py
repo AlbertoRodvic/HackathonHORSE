@@ -182,23 +182,23 @@ def microstop_assessment(records, settings):
     return summary.sort_values("tap_on_signal_days_h", ascending=False), detail
 
 
-def investigation_figure(operations, settings):
+def investigation_figure(operations, settings, metric="availability_pct"):
     """Dos paneles del apartado 4 para las máquinas recibidas, incluso en revisión."""
     if operations.empty:
         return None
-    selected = operations.sort_values(["availability_pct", "Operacion"], ascending=[True, True],
+    selected = operations.sort_values([metric, "Operacion"], ascending=[True, True],
                                       na_position="last").reset_index(drop=True)
     fig = Figure(figsize=(14, max(4, len(selected) * .55)))
     axes = fig.subplots(1, 2, sharey=True, gridspec_kw={"width_ratios": [1, 1.1]})
     y = np.arange(len(selected))
-    axes[0].barh(y, selected.availability_pct, color=TIME_COLORS["TAP"])
+    axes[0].barh(y, selected[metric], color=TIME_COLORS["TAP"])
     axes[0].axvline(settings.availability_target, color="#333333", linestyle="--", label="Objetivo")
-    axes[0].set(xlim=(0, 100), xlabel="Disponibilidad (%)",
+    axes[0].set(xlim=(0, 100), xlabel="Funcionamiento / TR (%)" if metric == "TBF_pct" else "Disponibilidad propia (%)",
                 title=f"{selected.Linea.iloc[0]}: dónde investigar")
     axes[0].set_yticks(y, selected.Operacion)
     axes[0].invert_yaxis()
     axes[0].legend()
-    for index in selected.index[selected.availability_pct.isna()]:
+    for index in selected.index[selected[metric].isna()]:
         axes[0].text(2, index, "Sin disponibilidad definida", va="center", fontsize=9)
     left = np.zeros(len(selected))
     for kind in ["TAP", "DES", "SAT"]:
@@ -211,6 +211,65 @@ def investigation_figure(operations, settings):
     axes[1].legend()
     fig.tight_layout()
     return fig
+
+
+def microstop_points(operations):
+    """Un punto por operación de la línea y del periodo, nunca por día o semana."""
+    if operations.duplicated(OP_KEYS).any():
+        raise ValueError("La gráfica de microparadas requiere un único agregado por línea y operación.")
+    return operations.loc[operations.eligible & operations.stop_duration_reliable
+                          & operations.mean_stop_minutes.gt(0) & operations.fpm.gt(0)].copy()
+
+
+def stop_action_plan(operations, settings):
+    """Plantilla de cuatro casuísticas calculada con los mismos puntos de la nube."""
+    points = microstop_points(operations)
+    frequent = points.fpm.ge(points.frequency_p75)
+    brief = points.mean_stop_minutes.lt(settings.short_stop_minutes)
+    cases = [
+        ("Muchas paradas cortas", frequent & brief,
+         "Revisar registros de eventos, sensores, alimentación y atascos repetidos; priorizar las operaciones con más TAP."),
+        ("Muchas paradas largas", frequent & ~brief,
+         "Investigar incidencias repetidas y tiempos de recuperación; contrastar mantenimiento y condiciones de operación."),
+        ("Pocas paradas cortas", ~frequent & brief,
+         "Mantener seguimiento y estandarizar los ajustes; intervenir si aumenta la frecuencia o el tiempo acumulado."),
+        ("Pocas paradas largas", ~frequent & ~brief,
+         "Revisar las incidencias de mayor duración, su causa registrada y el procedimiento de recuperación."),
+    ]
+    rows = []
+    for name, mask, action in cases:
+        group = points.loc[mask].sort_values(["TAP", "Operacion"], ascending=[False, True])
+        rows.append({"case": name, "count": len(group), "operations": ", ".join(group.head(3).Operacion.astype(str)),
+                     "tap_hours": float(group.TAP.sum()), "action": action})
+    return rows
+
+
+def microstop_figure(operations, settings):
+    points = microstop_points(operations)
+    if points.empty:
+        return None
+    fig = Figure(figsize=(11, 5))
+    ax = fig.subplots()
+    sizes = 30 + 220 * points.TAP / points.TAP.max()
+    ax.scatter(points.fpm, points.mean_stop_minutes, s=sizes,
+               c=np.where(points.short_frequent_signal, "#dc4848", "#4b87bb"), alpha=.75)
+    ax.axhline(settings.short_stop_minutes, color="#dc4848", linestyle="--", label="Umbral breve")
+    ax.axhline(settings.long_stop_minutes, color="#667085", linestyle="--", label="Umbral prolongado")
+    ax.axvline(points.frequency_p75.iloc[0], color="#667085", linestyle=":", label="P75 de frecuencia")
+    for row in points.nlargest(3, "fpm").itertuples():
+        ax.annotate(row.Operacion, (row.fpm, row.mean_stop_minutes), xytext=(4, 5), textcoords="offset points")
+    ax.set(xscale="log", yscale="log", xlabel=f"Paradas propias / {settings.stop_rate_base} piezas (escala log)",
+           ylabel="Duración media (minutos, escala log)")
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    return fig
+
+
+def recurrence_matrix(weekly, kind, settings):
+    significant = weekly.loc[weekly.eligible & weekly.TBF_pct.lt(settings.availability_target)
+                             & weekly[f"{kind}_pct"].ge(settings.loss_threshold_pct)]
+    selected = significant.groupby("Operacion")[f"{kind}_pct"].max().sort_values(ascending=False).index.tolist()
+    return weekly.pivot(index="Operacion", columns=["Year", "Week"], values=f"{kind}_pct").reindex(selected)
 
 
 def priority_figure(operations, settings, limit=10):

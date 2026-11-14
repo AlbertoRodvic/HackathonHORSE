@@ -34,6 +34,15 @@ class CriteriaAndReportTests(unittest.TestCase):
     def setUp(self):
         self.source, self.config, self.prepared, self.records, self.days, self.settings, self.result = fixture()
 
+    def test_urgency_category_order(self):
+        statuses = ["Parada propia", "Saturación", "Desabastecimiento", "Mixto", "Buen funcionamiento", "Elemento lento", "Sin datos"]
+        operations = pd.concat([self.result.operations.iloc[[0]]] * len(statuses), ignore_index=True)
+        operations["status"] = statuses
+        operations["Operacion"] = [f"OP{index}" for index in range(len(statuses))]
+        operations["Orden_OP"] = list(range(len(statuses)))
+        ordered = order_operations(operations.iloc[::-1], urgent=True)
+        self.assertEqual(ordered.status.tolist(), statuses)
+
     def test_runtime_threshold_gates_all_stop_types_and_weekly_signals(self):
         cases = [(90, 10, 0, 0, "Buen funcionamiento"),
                  (90, 0, 10, 0, "Buen funcionamiento"),
@@ -65,7 +74,7 @@ class CriteriaAndReportTests(unittest.TestCase):
         row = analyse(records, days, self.config).operations.loc[lambda f: f.Linea.eq("L2")].iloc[0]
         self.assertEqual(row.availability_pct, 90)
         self.assertGreater(row.cycle_cmin, self.settings.cycle_target_cmin)
-        self.assertEqual(row["status"], "Elementos lentos")
+        self.assertEqual(row["status"], "Elemento lento")
         self.assertFalse(row.own_alert)
         row = analyse(records, days, self.config, Settings(cycle_target_cmin=1080)).operations.loc[lambda f: f.Linea.eq("L2")].iloc[0]
         self.assertEqual(row["status"], "Buen funcionamiento")
@@ -253,16 +262,12 @@ class MapInterfaceTests(unittest.TestCase):
             self.assertFalse(app.exception)
             self.assertTrue(any("Balance horario por revisar" in w.value for w in app.warning))
             self.assertFalse(any("Etiqueta de balance" in frame.value.columns for frame in app.dataframe))
-            app.number_input(key="balance_band_minutes").set_value(61.0).run()
-            self.assertFalse(app.exception)
-            buttons = [b for b in app.button if b.key and b.key.startswith("operation_")]
-            self.assertEqual([b.label for b in buttons], ["A", "B", "C", "X"])
+            self.assertFalse(any(n.label == "Banda orientativa de balance (min)" for n in app.number_input))
             # La fuente en disco conserva todos los registros y tiempos originales.
             pd.testing.assert_frame_equal(pd.read_csv(root / "data" / "datos_hackaton.csv"), source)
 
     def test_filters_sort_and_grid_preserve_selection(self):
         app = self.app()
-        app.selectbox(key="map_organization").set_value("Por disponibilidad de datos").run()
         app.selectbox(key="map_order").set_value("Por urgencia de reparación").run()
         buttons = [b for b in app.button if b.key and b.key.startswith("operation_")]
         self.assertEqual(buttons[0].label, "B")
@@ -280,7 +285,7 @@ class MapInterfaceTests(unittest.TestCase):
         self.assertFalse(app.exception)
         self.assertEqual([b.label for b in app.button], ["Ver operaciones", "Ver operaciones"])
         self.assertEqual(len(app.get("download_button")), 0)
-        self.assertEqual([m.value for m in app.metric], ["4", "1"])
+        self.assertEqual([m.value for m in app.metric], ["4", "0"])
         self.assertFalse(app.dataframe)
         self.assertFalse(any(s.label == "Línea" for s in app.selectbox))
         self.assertFalse(any(r.label == "Sección" for r in app.radio))
@@ -291,30 +296,28 @@ class MapInterfaceTests(unittest.TestCase):
     def test_no_alerts_subfilters_and_adjustable_availability(self):
         app = AppTest.from_string(self.script, default_timeout=60).run()
         app.button(key="line_L2").click().run()
-        app.selectbox(key="map_organization").set_value("Por disponibilidad de datos").run()
         app.selectbox(key="map_order").set_value("Por urgencia de reparación").run()
-        app.selectbox(key="map_signal").set_value("Sin alertas").run()
-        app.selectbox(key="map_no_alerts").set_value("Elementos lentos").run()
+        app.selectbox(key="map_signal").set_value("Funcionamiento aceptable").run()
+        app.selectbox(key="map_no_alerts").set_value("Elemento lento").run()
         self.assertEqual([b.label for b in app.button if b.key and b.key.startswith("operation_")], ["A"])
         app.selectbox(key="map_no_alerts").set_value("Buen funcionamiento").run()
         self.assertFalse([b for b in app.button if b.key and b.key.startswith("operation_")])
-        next(n for n in app.number_input if n.label == "Objetivo de disponibilidad propia (%)").set_value(99.0).run()
-        app.selectbox(key="map_signal").set_value("Parada propia").run()
+        next(n for n in app.number_input if n.label == "Objetivo de funcionamiento / TR (%)").set_value(99.0).run()
+        app.selectbox(key="map_signal").set_value("Mixto").run()
         self.assertFalse(app.exception)
         self.assertEqual([b.label for b in app.button if b.key and b.key.startswith("operation_")], ["A"])
 
     def test_analysis_menu_stays_below_map_and_line_download_is_not_repeated(self):
         app = self.app()
         menu = app.radio(key="line_analysis")
-        self.assertEqual(menu.options, ["Microparadas", "Evolución", "Calendario y calidad",
-                                       "Reparto de tiempos por operación", "Pérdidas propias"])
+        self.assertEqual(menu.options, ["Microparadas", "Máquinas más problemáticas", "Tiempos todas las máquinas"])
         for option in menu.options:
             app.radio(key="line_analysis").set_value(option).run()
             self.assertFalse(app.exception)
             self.assertFalse(any(e.label == "Cómo interpretar los resultados" for e in app.expander))
             self.assertEqual(app.header[0].value, "Mapa de operaciones")
             self.assertEqual(sum(e.proto.label == "Descargar indicadores de esta línea"
-                                 for e in app.get("download_button")), 1)
+                                 for e in app.get("download_button")), 0)
         app.button(key="back_to_lines").click().run()
         self.assertFalse(app.exception)
         self.assertEqual(app.header[0].value, "Elige una línea")
@@ -354,24 +357,26 @@ class MapInterfaceTests(unittest.TestCase):
             script = Path("app.py").read_text(encoding="utf-8").replace(
                 "ROOT = Path(__file__).resolve().parent", f"ROOT = Path({str(root)!r})")
             app = AppTest.from_string(script, default_timeout=60).run()
-            self.assertNotIn("Revisión prioritaria", [s.value for s in app.header])
+            self.assertNotIn("Revisión de datos", [s.value for s in app.header])
             app.button(key="line_L1").click().run()
             self.assertFalse(app.exception)
-            self.assertIn("Revisión prioritaria", [s.value for s in app.header])
+            app.radio(key="line_analysis").set_value("Máquinas más problemáticas").run()
+            self.assertIn("Revisión de datos", [s.value for s in app.header])
             self.assertEqual(app.header[0].value, "Mapa de operaciones")
             labels = [e.label for e in app.expander]
             for label in ["Sin producción · 1 máquinas", "Revisar datos · 1 máquinas", "Sin datos · 1 máquinas"]:
                 self.assertIn(label, labels)
             review = next(e for e in app.expander if e.label == "Revisar datos · 1 máquinas")
-            self.assertEqual(len(review.get("image")), 1)
+            self.assertEqual(len(review.get("image")), 0)
             self.assertFalse(any("jefe" in m.value.lower() for m in app.markdown))
-            app.selectbox(key="map_organization").set_value("Por disponibilidad de datos").run()
-            app.selectbox(key="map_data_group").set_value("Sin datos").run()
+            self.assertIn("Paradas totales propias · 1 máquinas", labels)
+            app.selectbox(key="map_signal").set_value("Otros").run()
+            app.selectbox(key="map_review").set_value("Sin datos").run()
             self.assertEqual([b.label for b in app.button if b.key and b.key.startswith("operation_")], ["D"])
-            app.selectbox(key="map_data_group").set_value("Revisar datos").run()
-            self.assertEqual([b.label for b in app.button if b.key and b.key.startswith("operation_")], ["E", "F"])
+            app.selectbox(key="map_review").set_value("Revisar datos").run()
+            self.assertEqual([b.label for b in app.button if b.key and b.key.startswith("operation_")], ["F"])
             self.assertFalse(app.exception)
-            self.assertIn("Revisión prioritaria", [s.value for s in app.header])
+            self.assertIn("Revisión de datos", [s.value for s in app.header])
 
 
 if __name__ == "__main__":

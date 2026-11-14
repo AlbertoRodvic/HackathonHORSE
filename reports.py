@@ -149,8 +149,8 @@ def _legend(settings):
         ("Parada propia", f"TBF/TR y disponibilidad propia < {settings.availability_target:g}%, sin señal inducida."),
         ("Desabastecimiento", f"TBF/TR < {settings.availability_target:g}%. Señal DES sin otras señales; DES/TR >= {u:g}% o predominio inducido."),
         ("Saturación", f"TBF/TR < {settings.availability_target:g}%. Señal SAT sin otras señales; SAT/TR >= {u:g}% o predominio inducido."),
-        ("Buen funcionamiento", f"Sin alertas de parada y ciclo <= {settings.cycle_target_cmin:g} cmin/pieza. Azul."),
-        ("Elementos lentos", f"Sin alertas de parada y ciclo > {settings.cycle_target_cmin:g} cmin/pieza. Azul grisáceo; no confirma una avería."),
+        ("Buen funcionamiento", f"Sin señales de parada y ciclo <= {settings.cycle_target_cmin:g} cmin/pieza. Azul; grupo Funcionamiento aceptable."),
+        ("Elemento lento", f"Sin señales de parada y ciclo > {settings.cycle_target_cmin:g} cmin/pieza. Azul grisáceo; grupo Funcionamiento aceptable."),
     ]
     return [(name, description) for name, description in rows if name in STATUS_COLORS]
 
@@ -193,12 +193,12 @@ def classification_report(settings, line, weeks, scenario):
         p(f"Disponibilidad propia: 100 × TBF / (TBF + TAP); señal propia si es inferior a {settings.availability_target:g}%. "
           f"DES o SAT: señal desde {settings.loss_threshold_pct:g}% de TR. Si solo su suma alcanza el umbral, "
           "se aplica predominio 1,5; sin predominio se activan ambas señales. Dos o más señales producen Mixto."),
-        p(f"TR = TBF + TAP + DES + SAT. Ciclo = 6000 × TBF (h) / NPR. Dentro de Sin alertas, "
+        p(f"TR = TBF + TAP + DES + SAT. Ciclo = 6000 × TBF (h) / NPR. Dentro de Funcionamiento aceptable, "
           f"el ciclo divide buen funcionamiento y elementos lentos con objetivo {settings.cycle_target_cmin:g} cmin/pieza. "
           "Los problemas de cobertura y coherencia tienen prioridad sobre la clasificación operativa."),
         legend_table(settings),
         heading("Lectura de los resultados"),
-        p("Mixto se representa mitad naranja y mitad amarillo. Los filtros de disponibilidad de datos "
+        p("Mixto se representa mitad naranja y mitad amarillo. Los filtros por categoría "
           "solo cambian las máquinas visibles. Las cajas muestran únicamente el nombre de la máquina. "
           "Los colores resumen el periodo; las coincidencias diarias no prueban causalidad y un elemento lento no confirma una avería."),
     ], "LOSSIA · Criterios de clasificación y colores")
@@ -299,8 +299,8 @@ def technical_report(prepared, records, days, result, settings, scenario, *, con
                 f"Umbrales actuales: breve < {settings.short_stop_minutes:g} min; prolongada >= {settings.long_stop_minutes:g} min; P25 distingue pocas y prolongadas. Son hipótesis ajustables, no diagnósticos de sensores ni inventario de eventos."),
               PageBreak(), heading("5 · Mapa de operaciones: lectura y navegación"),
               p("La vista de línea comienza por el mapa. Cada caja contiene exclusivamente el nombre y el color. Se recorre en una fila horizontal desplazable o se abre la cuadrícula completa. Al pulsar una caja, se muestra su evidencia debajo y se permite descargar el diagnóstico PDF."),
-              p("Orden de línea: Orden_OP y nombre para desempatar, sin inferir conexiones. Orden de urgencia: 3 = señales propias comparables; 2 = flujo; 1 = revisión de datos o actividad; 0 = seguimiento. Dentro de cada grupo: mayor porcentaje de pérdida, más recurrencia, más TAP y orden de configuración. Es una cola de investigación, no una estimación causal de producción perdida."),
-              p("Por orden de línea se muestran todas las operaciones. Por disponibilidad de datos se elige entre Con datos, Revisar datos (incluye Sin producción) y Sin datos. Para máquinas con datos se puede ordenar por urgencia y seleccionar un tipo de señal, incluido Mixto. Sin alertas reúne Buen funcionamiento y Elementos lentos, con un filtro adicional entre ambos. Los filtros no cambian el color. La leyenda conserva el nombre de las categorías fuera de las cajas.")]
+              p("Orden de línea: Orden_OP y nombre para desempatar, sin inferir conexiones. Orden de urgencia: parada propia, saturación, desabastecimiento, mixto, funcionamiento aceptable y, por separado, revisión de datos. Dentro de cada categoría se consideran porcentaje de pérdida, recurrencia y horas TAP. Es una cola de investigación, no una estimación causal de producción perdida."),
+              p("El filtro por categoría permite desplegar Otros: Sin producción, Revisar datos y Sin datos. Funcionamiento aceptable reúne Buen funcionamiento y Elemento lento, con colores distintos y un filtro adicional entre ambos. Las paradas totales con TBF cero y TAP positivo se destacan al principio. Los filtros no cambian el color. La leyenda permanece fuera de las cajas.")]
     for line, operations in result.operations.groupby("Linea"):
         operations = order_operations(operations)
         for start in range(0, len(operations), 126):

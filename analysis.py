@@ -9,12 +9,12 @@ from cleaning import BALANCE_COUNT_COLUMNS, DAY_KEYS, FLAGS, OP_KEYS, TIMES, VAL
 
 STATUS_COLORS = {
     "Parada propia": "#d94a4a", "Desabastecimiento": "#f2cf52", "Saturación": "#f08a35",
-    "Mixto": "#f08a35", "Sin alertas": "#339d78", "Buen funcionamiento": "#428bca",
-    "Elementos lentos": "#536579", "Otros": "#98a4b5", "Sin producción": "#98a4b5",
+    "Mixto": "#f08a35", "Funcionamiento aceptable": "#339d78", "Buen funcionamiento": "#428bca",
+    "Elemento lento": "#536579", "Otros": "#98a4b5", "Sin producción": "#98a4b5",
     "Revisar datos": "#667085", "Sin datos": "#b8c0cc",
 }
 MIXED_BACKGROUND = "linear-gradient(90deg, #f08a35 0 50%, #f2cf52 50% 100%)"
-TIME_COLORS = {"TBF": STATUS_COLORS["Sin alertas"], "TAP": STATUS_COLORS["Parada propia"],
+TIME_COLORS = {"TBF": STATUS_COLORS["Funcionamiento aceptable"], "TAP": STATUS_COLORS["Parada propia"],
                "DES": STATUS_COLORS["Desabastecimiento"], "SAT": STATUS_COLORS["Saturación"]}
 OTHER_STATUSES = ("Sin producción", "Revisar datos", "Sin datos")
 
@@ -120,7 +120,7 @@ def classify(operations, settings):
         ["Sin datos", "Revisar datos", "Sin producción", "Revisar datos", "Mixto",
          "Parada propia", "Desabastecimiento", "Saturación"], default="Buen funcionamiento")
     slow = result.status.eq("Buen funcionamiento") & result.cycle_cmin.gt(settings.cycle_target_cmin)
-    result.loc[slow, "status"] = "Elementos lentos"
+    result.loc[slow, "status"] = "Elemento lento"
     result["frequency_p75"] = np.nan
     result["frequency_p25"] = np.nan
     valid = result.eligible & result.stop_duration_reliable
@@ -149,8 +149,10 @@ def order_operations(operations, urgent=False):
     result["loss_severity_pct"] = result[["TAP_pct", "DES_pct", "SAT_pct"]].max(axis=1)
     result["recurrence_total"] = result[["recurrence_own", "recurrence_des", "recurrence_sat"]].sum(axis=1)
     if urgent:
-        return result.sort_values(["urgency_level", "loss_severity_pct", "recurrence_total", "TAP", "Orden_OP", "Operacion"],
-                                  ascending=[False, False, False, False, True, True], na_position="last")
+        result["category_order"] = result.status.map({"Parada propia": 0, "Saturación": 1,
+            "Desabastecimiento": 2, "Mixto": 3, "Buen funcionamiento": 4, "Elemento lento": 4}).fillna(5)
+        return result.sort_values(["category_order", "loss_severity_pct", "recurrence_total", "TAP", "Orden_OP", "Operacion"],
+                                  ascending=[True, False, False, False, True, True], na_position="last")
     return result.sort_values(["Orden_OP", "Operacion"], kind="stable")
 
 
@@ -175,9 +177,9 @@ def state_explanation(row, settings):
     reasons.append(f"Señal DES: {'sí' if des.iloc[0] else 'no'}; señal SAT: {'sí' if sat.iloc[0] else 'no'}. "
                    f"Umbral individual {settings.loss_threshold_pct:g}%. Si solo la suma inducida lo supera, "
                    "se usa predominio 1,5 o ambas señales cuando están equilibradas.")
-    reasons.append("Dos o más señales propias/inducidas producen estado Mixto. Sin alertas indica "
+    reasons.append("Dos o más señales propias/inducidas producen estado Mixto. Funcionamiento aceptable indica "
                    "que no se activan señales de parada con los criterios del periodo. "
-                   f"Dentro de Sin alertas, ciclo ≤ {settings.cycle_target_cmin:g} cmin/pieza indica buen funcionamiento; "
+                   f"Dentro de Funcionamiento aceptable, ciclo ≤ {settings.cycle_target_cmin:g} cmin/pieza indica buen funcionamiento; "
                    "un ciclo superior indica elementos lentos, sin atribuir una avería.")
     return reasons
 
@@ -263,7 +265,7 @@ def recommendation(row):
         "Desabastecimiento": "Revisar suministro y operaciones que alimentan este puesto.",
         "Saturación": "Revisar salida, buffers y operaciones receptoras.",
         "Mixto": "Separar las incidencias propias de las esperas externas antes de intervenir.",
-        "Elementos lentos": "Revisar el ciclo y las condiciones de operación; un ciclo alto no confirma una avería.",
+        "Elemento lento": "Revisar el ciclo y las condiciones de operación; un ciclo alto no confirma una avería.",
         "Buen funcionamiento": "Mantener el seguimiento de disponibilidad y el mantenimiento preventivo.",
         "Sin producción": "Confirmar si debía trabajar; puede estar no planificada o totalmente parada.",
         "Revisar datos": "Revisar cobertura y coherencia de tiempos y contadores antes de comparar.",

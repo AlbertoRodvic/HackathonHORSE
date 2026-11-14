@@ -8,19 +8,17 @@ from pathlib import Path
 import matplotlib
 matplotlib.use("Agg")  # Streamlit renderiza imágenes; no debe iniciar ventanas Tk.
 import matplotlib.pyplot as plt
-import numpy as np
 import pandas as pd
 import streamlit as st
 
-from analysis import (Settings, STATUS_COLORS, MIXED_BACKGROUND, TIME_COLORS, analyse, order_operations, priorities,
-                      OTHER_STATUSES, map_categories, propagation_evidence, validate_connections)
-from cleaning import BALANCE_LABELS, DAY_KEYS, DAY_LABELS, FLAGS, TIMES, VALUES, prepare_data, select_scenario
-from reports import operation_report, technical_report, classification_report, text_color
-from diagnostics import (critical_candidates, impact_pairs, impact_summary, microstop_assessment,
-                         investigation_figure, priority_figure, total_stops)
+from analysis import (Settings, STATUS_COLORS, MIXED_BACKGROUND, TIME_COLORS, analyse, order_operations,
+                      OTHER_STATUSES, map_categories, propagation_evidence)
+from cleaning import TIMES, prepare_data, select_scenario
+from reports import operation_report, classification_report, text_color
+from diagnostics import investigation_figure, microstop_points, microstop_figure, stop_action_plan, recurrence_matrix
 
 ROOT = Path(__file__).resolve().parent
-ANALYSES = ["Microparadas", "Evolución", "Calendario y calidad", "Reparto de tiempos por operación", "Pérdidas propias"]
+ANALYSES = ["Microparadas", "Máquinas más problemáticas", "Tiempos todas las máquinas"]
 SCENARIOS = {"Provisional: excluir días sin actividad por confirmar": "provisional",
              "Excluir solo cierres confirmados": "confirmed", "Incluir todos los días": "all"}
 METRIC_LABELS = {"Orden_OP": "Orden", "status": "Patrón", "availability_pct": "Disponibilidad propia (%)",
@@ -37,8 +35,6 @@ METRIC_LABELS = {"Orden_OP": "Orden", "status": "Patrón", "availability_pct": "
                  "balance_ok_days": "Días en banda", "balance_deficit_days": "Días con déficit",
                  "balance_excess_days": "Días con exceso", "balance_zero_days": "Días sin tiempo",
                  "balance_review_days": "Días con balance por revisar"}
-FLAG_LABELS = dict(zip(FLAGS, ["Producción sin funcionamiento", "Funcionamiento sin producción",
-                              "Paradas sin tiempo propio", "Tiempo propio sin paradas contadas"]))
 
 
 def number(value, suffix="", digits=1):
@@ -94,7 +90,6 @@ def open_line(line):
     st.session_state["line"] = line
     st.session_state["section"] = "Operaciones"
     st.session_state["selected_operation"] = None
-    st.session_state["map_data_group"] = "Con datos"
 
 
 def open_summary():
@@ -121,9 +116,10 @@ def source_identity(upload, filename):
 
 def summary_view(result, configuration):
     st.header("Elige una línea")
-    st.caption("Líneas ordenadas de mayor a menor número de máquinas con problemas. "
-               "Cada máquina cuenta una vez si presenta una señal operativa o requiere revisar planificación o datos.")
-    problems = result.operations.loc[result.operations.status.ne("Buen funcionamiento")].groupby("Linea").size()
+    st.caption("Líneas ordenadas por máquinas con señales de parada. Cada máquina cuenta una vez si tiene señal TAP, SAT, DES o mixta. "
+               "La lentitud y la revisión de datos se muestran por separado; las señales no confirman averías.")
+    signals = result.operations[["own_alert", "des_alert", "sat_alert"]].any(axis=1)
+    problems = result.operations.loc[signals].groupby("Linea").size()
     lines = sorted(configuration.Linea.unique(), key=lambda name: (-int(problems.get(name, 0)), str(name)))
     for line in lines:
         operations = result.operations.loc[result.operations.Linea.eq(line)]
@@ -131,7 +127,7 @@ def summary_view(result, configuration):
         with st.container(border=True):
             st.markdown(f'<div style="border-left:5px solid {color};padding-left:14px">'
                         f'<h3 style="margin:0">{escape(str(line))}</h3></div>', unsafe_allow_html=True)
-            st.metric("Máquinas con problemas", int(problems.get(line, 0)))
+            st.metric("Máquinas con señales de parada", int(problems.get(line, 0)))
             if operations.empty:
                 st.info("Sin jornadas incluidas para esta línea en el periodo y escenario seleccionados.")
             st.button("Ver operaciones", key=f"line_{line}", on_click=open_line, args=(line,), type="primary")
@@ -141,7 +137,7 @@ def others_view(operations, settings):
     others = operations.loc[operations.status.isin(OTHER_STATUSES)]
     if others.empty:
         return
-    st.header("Revisión prioritaria")
+    st.header("Revisión de datos")
     st.warning(f"{len(others)} operaciones requieren revisión de planificación o datos. "
                "Confirmar estos casos antes de interpretar sus pérdidas como averías.")
     actions = {
@@ -152,19 +148,30 @@ def others_view(operations, settings):
         "Sin datos": ("Sin datos", "Confirmar si las máquinas estaban previstas y localizar sus registros. "
                      "Mantenimiento: revisar la captura de datos si faltan registros de máquinas que estaban activas."),
     }
-    for status, (label, action) in actions.items():
-        group = others.loc[others.status.eq(status)]
-        if not group.empty:
-            with st.expander(f"{label} · {len(group)} máquinas", expanded=True):
-                st.write("**Máquinas:** " + ", ".join(group.Operacion.astype(str)))
-                st.write(action)
-                if status == "Revisar datos":
-                    st.caption("Valores registrados pendientes de validar. La cobertura o coherencia de estos datos "
-                               "impide usarlos como diagnóstico definitivo; una disponibilidad indefinida no equivale a cero.")
-                    plot(investigation_figure(group, settings))
-                table(group[["Linea", "Operacion", "TBF", "TAP", "NPR", "coverage_pct",
-                             "observed_days", "expected_days", "recommendation"]])
-    st.divider()
+    with st.expander(f"Otros · {len(others)} máquinas", expanded=False):
+        st.caption("Otros agrupa Sin producción, Revisar datos y Sin datos. No son averías confirmadas.")
+        for status, (label, action) in actions.items():
+            group = others.loc[others.status.eq(status)]
+            if not group.empty:
+                with st.expander(f"{label} · {len(group)} máquinas"):
+                    st.write("**Máquinas:** " + ", ".join(group.Operacion.astype(str)))
+                    st.write(action)
+                    table(group[["Linea", "Operacion", "TBF", "TAP", "NPR", "coverage_pct",
+                                 "observed_days", "expected_days", "recommendation"]])
+
+
+def total_stop_view(operations):
+    stopped = operations.loc[operations.TBF.eq(0) & operations.NPR.eq(0) & operations.TAP.gt(0)]
+    if stopped.empty:
+        return
+    with st.expander(f"Paradas totales propias · {len(stopped)} máquinas", expanded=True):
+        st.warning("TBF cero con tiempo de parada propia registrado. Confirmar si estas operaciones debían trabajar e investigar la parada total.")
+        st.caption("Con datos completos, estas operaciones figuran como Sin producción, dentro de Otros. "
+                   "No se mezclan con las máquinas que producen y tienen paradas parciales.")
+        table(stopped[["Operacion", "status", "TBF", "TAP", "DES", "SAT", "NPR"]])
+        for row in stopped.itertuples():
+            st.button(f"Ver diagnóstico de {row.Operacion}", key=f"total_stop_{row.Operacion}",
+                      on_click=open_operation, args=(row.Operacion,))
 
 
 def diagnostic(row, settings):
@@ -195,30 +202,25 @@ def diagnostic(row, settings):
 def operations_view(operations, records, days, settings, scenario, connections, sources):
     st.header("Mapa de operaciones")
     st.caption(f"Línea: {operations.Linea.iloc[0]}")
+    total_stop_view(operations)
     st.caption("Cada caja es una operación. Desliza la fila o abre la vista completa; pulsa una caja para ver su diagnóstico debajo.")
     controls = st.columns([1.1, 1.8, 1.2])
-    sort_mode = controls[0].selectbox("Organizar máquinas", ["Por orden de línea", "Por disponibilidad de datos"], key="map_organization")
+    order_mode = controls[0].selectbox("Orden para máquinas con datos", ["Por orden de línea", "Por urgencia de reparación"], key="map_order")
+    repair_group = controls[1].selectbox("Tipo de señal", ["Todas", "Parada propia", "Saturación", "Desabastecimiento", "Mixto", "Funcionamiento aceptable", "Otros"], key="map_signal")
     available = [name for name in STATUS_COLORS if name in set(map_categories(operations))]
-    visible = order_operations(operations)
-    if sort_mode == "Por disponibilidad de datos":
-        availability_group = controls[1].selectbox("Disponibilidad de datos", ["Con datos", "Revisar datos", "Sin datos"], key="map_data_group")
-        if availability_group == "Con datos":
-            visible = visible.loc[visible.eligible]
-            order_mode = st.selectbox("Orden para máquinas con datos", ["Por orden de línea", "Por urgencia de reparación"], key="map_order")
-            if order_mode == "Por urgencia de reparación":
-                repair_group = st.selectbox("Tipo de señal", ["Todas", "Parada propia", "Desabastecimiento", "Saturación", "Mixto", "Sin alertas"], key="map_signal")
-                if repair_group == "Sin alertas":
-                    visible = visible.loc[visible.status.isin(["Buen funcionamiento", "Elementos lentos"])]
-                    detail = st.selectbox("Dentro de Sin alertas", ["Todos", "Buen funcionamiento", "Elementos lentos"], key="map_no_alerts")
-                    if detail != "Todos":
-                        visible = visible.loc[visible.status.eq(detail)]
-                elif repair_group != "Todas":
-                    visible = visible.loc[visible.status.eq(repair_group)]
-                visible = order_operations(visible, urgent=True)
-        elif availability_group == "Revisar datos":
-            visible = visible.loc[visible.status.isin(["Revisar datos", "Sin producción"])]
-        else:
-            visible = visible.loc[visible.status.eq("Sin datos")]
+    visible = order_operations(operations, urgent=order_mode == "Por urgencia de reparación")
+    if repair_group == "Funcionamiento aceptable":
+        visible = visible.loc[visible.status.isin(["Buen funcionamiento", "Elemento lento"])]
+        detail = st.selectbox("Dentro de Funcionamiento aceptable", ["Todos", "Buen funcionamiento", "Elemento lento"], key="map_no_alerts")
+        if detail != "Todos":
+            visible = visible.loc[visible.status.eq(detail)]
+    elif repair_group == "Otros":
+        visible = visible.loc[visible.status.isin(OTHER_STATUSES)]
+        review = st.selectbox("Tipo de revisión", ["Todos", *OTHER_STATUSES], key="map_review")
+        if review != "Todos":
+            visible = visible.loc[visible.status.eq(review)]
+    elif repair_group != "Todas":
+        visible = visible.loc[visible.status.eq(repair_group)]
     with controls[2]:
         st.write("")
         st.button("Volver a fila horizontal" if st.session_state.get("map_expanded", False) else "Ver todas en pantalla",
@@ -232,7 +234,7 @@ def operations_view(operations, records, days, settings, scenario, connections, 
                         for status in available if status in present)
     st.markdown(legend, unsafe_allow_html=True)
     st.caption(f"Mostrando {len(visible)} de {len(operations)} operaciones. "
-               + "Los filtros de disponibilidad no cambian los colores. "
+               + "Los filtros no cambian los colores. "
                + "El orden no implica conexión física; el color resume el periodo, no el estado instantáneo.")
     expanded = st.session_state.get("map_expanded", False)
     selected = st.session_state.get("selected_operation")
@@ -271,14 +273,7 @@ def operations_view(operations, records, days, settings, scenario, connections, 
                        classification_report(settings, operations.Linea.iloc[0],
                                              sorted(set(zip(days.Year, days.Week))), scenario),
                        file_name="criterios_clasificacion_lossia.pdf", mime="application/pdf", on_click="ignore")
-    below = operations.loc[operations.eligible & operations.TBF_pct.lt(settings.availability_target)]
-    if not below.empty:
-        st.subheader(f"Máquinas con funcionamiento / TR < {settings.availability_target:g}% · {len(below)}")
-        plot(investigation_figure(below, settings))
-    others_view(operations, settings)
-    if selected is None:
-        st.info("Selecciona una operación en el mapa para ver su estado, evidencias y PDF de diagnóstico.")
-    else:
+    if selected is not None:
         st.divider()
         row = operations.loc[operations.Operacion.eq(selected)].iloc[0]
         diagnostic(row, settings)
@@ -302,207 +297,89 @@ def operations_view(operations, records, days, settings, scenario, connections, 
         st.download_button("Descargar diagnóstico PDF", pdf, file_name=filename, mime="application/pdf", on_click="ignore", type="primary")
 
 
-def own_losses_view(operations, records, settings, connections):
-    st.header("Pérdidas propias")
-    ranking = priorities(operations)
-    table(ranking[["Operacion", "TAP_pct", "TAP", "availability_pct", "recurrence_own", "recommendation"]])
-    with st.expander("Validar el alcance sobre todas las otras operaciones"):
-        candidates = critical_candidates(operations, records)
-        st.caption("Segundo paso tras identificar pérdidas propias. Se comparan días con y sin señal propia; "
-                   "hacen falta al menos 3 días en cada grupo. Una asociación positiva no demuestra causalidad.")
-        if candidates.empty:
-            st.info("No hay candidatas con los criterios y el escenario elegidos.")
+def action_plan_view(operations, settings):
+    st.caption(f"Muchas/pocas se compara con el P75 de paradas por pieza de la línea; "
+               f"cortas/largas se separan en {settings.short_stop_minutes:g} min de media. "
+               "Estas categorías orientan la revisión; no identifican la causa de las paradas.")
+    for case in stop_action_plan(operations, settings):
+        if case["count"]:
+            st.markdown(f"**{case['case']} · {case['count']} operaciones, {number(case['tap_hours'], ' h TAP')}.** "
+                        f"Priorizar por tiempo acumulado: {case['operations']}. {case['action']}")
         else:
-            name = st.selectbox("Candidata para estudiar impacto", candidates.Operacion.tolist())
-            pairs = impact_pairs(candidates.loc[candidates.Operacion.eq(name)], operations, records, settings, connections)
-            table(impact_summary(pairs))
-            st.caption("Se incluyen todas las demás operaciones. Sin conexiones reales no se atribuye dirección. "
-                       "Cero coincidencias o falta de días de control no demuestra ausencia de impacto. "
-                       "Los campos time_mismatch_days permiten revisar la sensibilidad al balance horario.")
-            table(pairs)
-            st.download_button("Descargar comparación completa de impacto", pairs.to_csv(index=False).encode("utf-8-sig"),
-                               file_name="impacto_operacion.csv", mime="text/csv")
-    with st.expander("Paradas totales: investigación separada"):
-        st.caption("TBF=0, NPR=0 y tiempo registrado. Prioridad alta si la línea debía producir o hay actividad en "
-                   "otras operaciones; confirmar siempre que esta operación concreta debía trabajar.")
-        table(total_stops(records))
+            st.markdown(f"**{case['case']}:** sin operaciones con media fiable en este grupo.")
 
 
 def microstop_view(operations, settings, records):
     st.header("Frecuencia y duración de las paradas")
+    points = microstop_points(operations)
+    micro = points.loc[points.short_frequent_signal].sort_values(["mean_stop_minutes", "Operacion"])
     cards = st.columns(3)
-    cards[0].metric("Operaciones con media consistente", int((operations.eligible & operations.stop_duration_reliable).sum()))
-    cards[1].metric("Señal de frecuentes y breves", int(operations.short_frequent_signal.sum()))
-    cards[2].metric("Media de parada prolongada", int((operations.eligible & operations.stop_duration_reliable & operations.mean_stop_minutes.ge(settings.long_stop_minutes)).sum()))
-    st.caption("A la derecha: más paradas por pieza. Abajo: paradas más breves. El tamaño muestra horas de TAP.")
-    points = operations.loc[operations.eligible & operations.stop_duration_reliable
-                            & operations.mean_stop_minutes.gt(0) & operations.fpm.gt(0)]
-    if points.empty:
+    cards[0].metric("Operaciones representadas", len(points))
+    cards[1].metric("Indicios de microparadas", len(micro))
+    cards[2].metric("Media de parada prolongada", int(points.mean_stop_minutes.ge(settings.long_stop_minutes).sum()))
+    st.caption(f"Un punto por operación: {len(points)} de {len(operations)} operaciones de la línea. "
+               "Se excluyen las medias no fiables y los datos insuficientes; no se dibujan días ni semanas como puntos adicionales. "
+               "El tamaño de la burbuja representa las horas de TAP.")
+    fig = microstop_figure(operations, settings)
+    if fig is None:
         st.info("No hay operaciones con frecuencia y duración consistentes para dibujar la nube.")
     else:
-        fig, ax = plt.subplots(figsize=(11, 5))
-        max_tap = points.TAP.max()
-        sizes = 30 + 220 * points.TAP / max_tap
-        ax.scatter(points.fpm, points.mean_stop_minutes, s=sizes,
-                   c=np.where(points.short_frequent_signal, "#dc4848", "#4b87bb"), alpha=0.75)
-        ax.axhline(settings.short_stop_minutes, color="#dc4848", linestyle="--", label="Umbral breve")
-        ax.axhline(settings.long_stop_minutes, color="#667085", linestyle="--", label="Umbral prolongado")
-        ax.axvline(points.frequency_p75.iloc[0], color="#667085", linestyle=":", label="P75 de frecuencia")
-        for row in points.nlargest(3, "fpm").itertuples():
-            ax.annotate(row.Operacion, (row.fpm, row.mean_stop_minutes), xytext=(4, 5), textcoords="offset points")
-        ax.set_xscale("log")
-        ax.set_yscale("log")
-        ax.set(xlabel=f"Paradas propias / {settings.stop_rate_base} piezas (escala log)",
-               ylabel="Duración media (minutos, escala log)")
-        ax.legend(fontsize=8)
-        fig.tight_layout()
         plot(fig)
-        st.caption("Rojo: frecuencia ≥ P75 de la línea y media inferior al umbral breve. "
-                   "Tamaño del punto: horas de TAP. Son indicios, no microparadas confirmadas.")
+        st.caption("Rojo: frecuencia ≥ P75 y media inferior al umbral breve. Son indicios de microparadas, no eventos confirmados.")
+    st.subheader("Lectura de la línea y acciones recomendadas")
+    action_plan_view(operations, settings)
+    if not micro.empty:
+        first = micro.sort_values("TAP", ascending=False).iloc[0]
+        st.write(f"La mayor acumulación de TAP entre las operaciones con indicios corresponde a {first.Operacion}: "
+                 f"{number(first.TAP, ' h')}, {number(first.fpm)} paradas por {settings.stop_rate_base} piezas "
+                 f"y {number(first.mean_stop_minutes, ' min', 3)} por parada. "
+                 "Contrastar los eventos y las condiciones de operación antes de decidir la intervención.")
+    if not points.empty and not points.mean_stop_minutes.ge(settings.long_stop_minutes).any():
+        st.write(f"Ninguna media fiable alcanza {settings.long_stop_minutes:g} min. "
+                 "Esto no excluye eventos largos aislados dentro de una media baja.")
+    st.subheader("Operaciones con indicios de microparadas, de menor a mayor duración media")
+    if micro.empty:
+        st.info("No hay operaciones que combinen frecuencia alta y media breve en esta selección.")
+    else:
+        table(micro[["Operacion", "mean_stop_minutes", "fpm", "NAP", "TAP"]])
     with st.expander("Datos y cálculo de la media"):
-        st.write("Media por parada = TAP × 60 / NAP, en minutos. Se suman tiempos y contadores antes de dividir.")
-        table(operations[["Operacion", "NAP", "TAP", "fpm", "mean_stop_minutes", "stop_duration_reliable", "stop_pattern"]])
-    st.subheader("Dónde son potencialmente relevantes")
-    st.caption(f"Análisis diario separado del color: media < {settings.short_stop_minutes:g} min y FPM >= P75 de la línea "
-               f"con días fiables. Relevante si el TAP de los días compatibles alcanza {settings.microstop_loss_threshold_pct:g}% "
-               "del TR de días válidos. No son averías grandes confirmadas: el TAP mostrado puede incluir eventos largos.")
-    summary, detail = microstop_assessment(records, settings)
-    table(summary.loc[summary.brief_frequent_days.gt(0)])
-    with st.expander("Días y registros con indicios de microparadas"):
-        table(detail)
+        st.write("Media = 60 × suma de TAP / suma de NAP. Se agregan los registros de cada operación antes de dividir.")
+        table(operations[["Operacion", "NAP", "TAP", "fpm", "mean_stop_minutes", "stop_duration_reliable"]])
 
 
-def evolution_view(result, line, operations, settings):
-    st.header("Evolución y recurrencia")
-    st.subheader("Disponibilidad, pérdidas y otros indicadores de las prioritarias")
-    comparison = priority_figure(operations, settings)
-    if comparison is not None:
-        plot(comparison)
-    st.subheader("Reparto diario de horas-máquina")
-    st.caption("Cada barra suma las operaciones registradas de un día; no mide el tiempo parada de la línea.")
-    time_mix(result.daily.loc[result.daily.Linea.eq(line)], daily=True)
+def problematic_view(result, line, operations, settings):
+    st.header("Máquinas más problemáticas")
+    others_view(operations, settings)
+    below = operations.loc[operations.eligible & operations.TBF_pct.lt(settings.availability_target)]
+    st.subheader(f"Máquinas con funcionamiento / TR < {settings.availability_target:g}% · {len(below)}")
+    if below.empty:
+        st.info("No hay operaciones comparables por debajo del objetivo.")
+    else:
+        st.caption("Las barras y el filtro usan el mismo indicador: TBF / (TBF + TAP + DES + SAT). "
+                   "Estar por debajo del objetivo no demuestra una avería propia.")
+        plot(investigation_figure(below, settings, metric="TBF_pct"))
+        st.subheader("Patrón de paradas y línea de actuación")
+        action_plan_view(below, settings)
     st.subheader("Qué pérdidas se repiten")
-    count = st.slider("Operaciones en los mapas", 1, len(operations), min(12, len(operations))) if len(operations) > 1 else 1
     weekly = result.weekly.loc[result.weekly.Linea.eq(line)]
-    for tab, kind in zip(st.tabs(["Parada propia · TAP", "Desabastecimiento · DES", "Saturación · SAT"]), ["TAP", "DES", "SAT"]):
+    for tab, kind in zip(st.tabs(["Parada propia · TAP", "Saturación · SAT", "Desabastecimiento · DES"]), ["TAP", "SAT", "DES"]):
         with tab:
-            selected = operations.sort_values(f"{kind}_pct", ascending=False).head(count).Operacion.tolist()
-            heat = weekly.pivot(index="Operacion", columns=["Year", "Week"], values=f"{kind}_pct").reindex(selected)
-            fig, ax = plt.subplots(figsize=(10, max(3, len(heat) * 0.42)))
-            image = ax.imshow(heat.to_numpy(dtype=float), cmap="YlOrRd", vmin=0, vmax=100, aspect="auto")
+            heat = recurrence_matrix(weekly, kind, settings)
+            if heat.empty:
+                st.info(f"No hay operaciones con {kind}/TR ≥ {settings.loss_threshold_pct:g}% en semanas comparables bajo el objetivo.")
+                continue
+            fig, ax = plt.subplots(figsize=(10, max(3, len(heat) * .42)))
+            chart = ax.imshow(heat.to_numpy(dtype=float), cmap="YlOrRd", vmin=0, vmax=100, aspect="auto")
             ax.set_xticks(range(len(heat.columns)), [f"{year}-S{week}" for year, week in heat.columns])
             ax.set_yticks(range(len(heat)), heat.index)
-            for i, operation in enumerate(heat.index):
-                for j, (year, week) in enumerate(heat.columns):
-                    row = weekly.loc[weekly.Operacion.eq(operation) & weekly.Year.eq(year) & weekly.Week.eq(week)].iloc[0]
-                    text = f"{heat.iloc[i, j]:.1f}%" if pd.notna(heat.iloc[i, j]) else "Sin datos"
-                    text += f" ({int(row.observed_days)}/{int(row.expected_days)} d)"
-                    ax.text(j, i, text, ha="center", va="center", fontsize=8)
-            fig.colorbar(image, ax=ax, label=f"{kind} / TR (%)")
+            for i in range(len(heat)):
+                for j in range(len(heat.columns)):
+                    value = heat.iloc[i, j]
+                    ax.text(j, i, f"{value:.1f}%" if pd.notna(value) else "Sin datos", ha="center", va="center", fontsize=8)
+            fig.colorbar(chart, ax=ax, label=f"{kind} / TR (%)")
             fig.tight_layout()
             plot(fig)
-    st.caption("Los mapas muestran porcentajes y cobertura. Los recuentos semanales usan solo semanas comparables; "
-               "no identifican si la misma avería se prolongó o si fueron eventos diferentes.")
-    table(operations[["Operacion", "recurrence_own", "recurrence_des", "recurrence_sat", "evaluable_week"]])
-
-
-def hour_balance_view(records, *, key):
-    """Etiquetas visibles y descargables; filtrar esta tabla no cambia el análisis."""
-    if records.empty:
-        st.info("No hay registros utilizables para comprobar el balance en este alcance.")
-        return
-    counts = records.balance_label.value_counts().reindex(BALANCE_LABELS, fill_value=0)
-    for column, label in zip(st.columns(4), BALANCE_LABELS):
-        column.metric(label, int(counts[label]))
-    bands = records.balance_band_minutes.unique()
-    st.caption(f"Balance = TBF + TAP + DES + SAT frente a la referencia de cada jornada. "
-               f"Banda orientativa: ±{number(float(bands[0]), ' min', 2)}. "
-               "Estar en banda no demuestra que el registro sea correcto. Sin tiempo asignado significa que las cuatro categorías suman cero.")
-    labels = st.multiselect("Etiquetas de balance visibles", list(BALANCE_LABELS), default=list(BALANCE_LABELS), key=f"{key}_labels")
-    detail = records.loc[records.balance_label.isin(labels)].sort_values(DAY_KEYS + ["Operacion"])
-    columns = ["Source_Row"] + DAY_KEYS + ["Operacion"] + VALUES + ["recorded_hours", "reference_hours", "balance_delta_minutes", "balance_label"]
-    table(detail[columns])
-    st.caption("Déficit: revisar categorías, jornada y captura. Exceso: revisar solapes, ventanas y unidades. "
-               "Tiempo cero: confirmar planificación o ausencia de captura. Ninguna etiqueta diagnostica por sí sola una avería.")
-    st.download_button("Descargar registros con etiqueta de balance", detail[columns].to_csv(index=False).encode("utf-8-sig"),
-                       file_name="balance_horario.csv", mime="text/csv", key=f"{key}_download")
-
-
-def quality_view(prepared, settings, weeks):
-    st.header("Calendario y calidad de los datos")
-    st.subheader("Balance horario por registro")
-    balance_records, _ = select_scenario(prepared, "all", weeks)
-    balance_lines = ["Todas"] + sorted(prepared.configuration.Linea.unique().tolist())
-    scope_line = st.selectbox("Línea del balance horario", balance_lines, key="quality_balance_line")
-    if scope_line != "Todas":
-        balance_records = balance_records.loc[balance_records.Linea.eq(scope_line)]
-    st.caption("Semanas seleccionadas, incluyendo días sin actividad y cierres. Este bloque conserva todas las etiquetas para auditar el registro original.")
-    hour_balance_view(balance_records, key="quality_balance")
-    st.info("Un festivo público no explica automáticamente un cierre de fábrica. "
-            "Los días sin actividad se mantienen como causa pendiente hasta confirmar la planificación. "
-            "Si un cierre indicado por el calendario tiene producción o funcionamiento registrado, "
-            "se conserva y se señala la contradicción para revisión.")
-    st.subheader("Cómo influye el tratamiento de los días")
-    comparisons = []
-    for label, scenario in SCENARIOS.items():
-        records, days = select_scenario(prepared, scenario, weeks)
-        result = analyse(records, days, prepared.configuration, settings)
-        for line in days.Linea.unique():
-            ops = result.operations.loc[result.operations.Linea.eq(line)]
-            comparisons.append({"Escenario": label, "Linea": line, "Días": len(days.loc[days.Linea.eq(line)]),
-                                "Operaciones comparables": int(ops.eligible.sum()),
-                                "Bajo objetivo de disponibilidad": int((ops.eligible & ops.availability_pct.lt(settings.availability_target)).sum())})
-    table(pd.DataFrame(comparisons))
-    st.subheader("Calendario y cobertura registrados")
-    st.caption("Estas tablas de calidad abarcan todos los datos cargados; la comparación anterior usa las semanas elegidas.")
-    days = prepared.days.copy()
-    days["Estado"] = days.day_status.map(DAY_LABELS)
-    table(days[DAY_KEYS + ["Estado", "Motivo", "observed_operations", "expected_operations", "complete_coverage"]])
-    table(prepared.audit.to_frame().reset_index(names="Comprobación"))
-    st.subheader("Registros con señales de revisión")
-    for flag, label in FLAG_LABELS.items():
-        detail = prepared.records.loc[prepared.records[flag]]
-        with st.expander(f"{label} · {len(detail)} registros"):
-            table(detail[["Source_Row"] + DAY_KEYS + ["Operacion"] + VALUES + ["day_status"]])
-    with st.expander(f"Registros apartados · {len(prepared.quarantine)}"):
-        st.caption("Sus valores conservan las unidades originales. Los motivos figuran en columnas issue_.")
-        table(prepared.quarantine)
-    with st.expander(f"Copias idénticas retiradas · {len(prepared.duplicates)}"):
-        table(prepared.duplicates)
-
-
-def report_view(prepared, records, days, result, settings, scenario, sources, connections, context, weeks):
-    st.header("El criterio unificado, explicado")
-    st.write("La misma regla decide el color, los filtros, la recurrencia y la explicación del PDF. "
-             "El informe incluye EDA, limpieza, matemáticas, gráficas, escalabilidad y límites del diagnóstico.")
-    st.caption("El informe general abarca todas las líneas cargadas y las semanas y escenario seleccionados.")
-    if st.button("Preparar informe técnico PDF", type="primary"):
-        with st.spinner("Preparando el informe con las gráficas y la evidencia seleccionada…"):
-            data = technical_report(prepared, records, days, result, settings, scenario, connections=connections, source_info=sources, selected_weeks=weeks)
-        st.session_state["technical_report"] = (context, data)
-    saved = st.session_state.get("technical_report")
-    if saved and saved[0] == context:
-        st.download_button("Descargar informe técnico PDF", saved[1], file_name="informe_tecnico_LOSSIA.pdf",
-                           mime="application/pdf", on_click="ignore", type="primary")
-    st.subheader("Cómo se asigna el estado")
-    table(pd.DataFrame([
-        {"Color": name, "Regla": rule} for name, rule in [
-            ("Gris · Sin datos", "Sin registros; no significa producción cero."),
-            ("Gris · Revisar datos", "Cobertura incompleta o tiempos y producción contradictorios."),
-            ("Gris · Sin producción", "NPR=0 y TBF=0: confirmar actividad prevista o parada total."),
-            ("Rojo · Parada propia", f"Disponibilidad < {settings.availability_target:g}%, sin señales inducidas."),
-            ("Amarillo · DES", "Señal de falta de suministro sin otra señal de parada."),
-            ("Naranja · SAT", "Señal de bloqueo de salida sin otra señal de parada."),
-            ("Naranja y amarillo · Mixto", "Señales propias e inducidas, o DES y SAT a la vez."),
-            ("Azul · Buen funcionamiento", f"Sin alertas de parada y ciclo ≤ {settings.cycle_target_cmin:g} cmin/pieza."),
-            ("Azul grisáceo · Elementos lentos", f"Sin alertas de parada y ciclo > {settings.cycle_target_cmin:g} cmin/pieza."),
-        ]]))
-    st.write(f"DES o SAT se activan al alcanzar {settings.loss_threshold_pct:g}% de TR. "
-             "Si solo la suma supera el umbral, se usa predominio 1,5; si no hay predominio, se activan ambas señales.")
-    st.write(f"Antes de distinguir TAP, DES y SAT se exige TBF/TR < {settings.availability_target:g}%. "
-             "Si el funcionamiento alcanza el objetivo, no se activa ninguna señal de parada.")
-    st.write("La urgencia ordena primero pérdidas propias comparables, después flujo, revisión de datos y seguimiento. "
-             "Dentro de cada grupo prioriza porcentaje de pérdida, recurrencia y horas TAP. No estima responsabilidad causal.")
+            st.caption(f"Solo operaciones con {kind}/TR ≥ {settings.loss_threshold_pct:g}% en al menos una semana comparable bajo el objetivo.")
 
 
 def main():
@@ -518,23 +395,18 @@ def main():
             config = st.file_uploader("Configuración", type="csv")
             calendar_file = st.file_uploader("Calendario de fábrica (opcional)", type="csv")
             st.caption("Calendario: Linea, Year, Week, Jour, Planned_Production (0/1); Planned_Hours y Motivo opcionales.")
-            connections_file = st.file_uploader("Conexiones reales entre operaciones (opcional)", type="csv")
-            st.caption("Conexiones: Linea, Origen, Destino. Sirven para estudiar coincidencias aguas arriba y abajo, no para demostrar causalidad.")
             decimal = st.selectbox("Separador decimal", [".", ","])
             unit = st.selectbox("Unidad de los tiempos de entrada", ["hours", "minutes", "seconds"],
                                 format_func=lambda value: {"hours": "Horas", "minutes": "Minutos", "seconds": "Segundos"}[value])
         with st.expander("Objetivos y umbrales"):
-            availability = st.number_input("Objetivo de disponibilidad propia (%)", 1.0, 100.0, 90.0)
-            st.caption("Este objetivo también exige TBF/TR inferior al umbral para activar señales TAP, DES o SAT.")
+            availability = st.number_input("Objetivo de funcionamiento / TR (%)", 1.0, 99.9, 90.0)
+            st.caption("Funcionamiento = TBF / (TBF + TAP + DES + SAT). Solo se activan señales de parada por debajo de este objetivo.")
             cycle = st.number_input("Objetivo de ciclo (cmin/pieza)", 0.1, value=80.0)
-            loss = st.number_input("Señal de pérdida sobre TR (%)", 0.1, 100.0, 10.0)
+            loss = round(100 - availability, 10)
+            st.caption(f"El umbral para distinguir pérdidas se deriva del objetivo: 100 − {availability:g} = {loss:g}% de TR.")
             short = st.number_input("Parada breve: media inferior a (min)", 0.1, 10.0, 2.0)
             long = st.number_input("Parada prolongada: media desde (min)", 10.1, value=15.0)
             reference = st.number_input("Referencia de horas por jornada", 0.1, value=22.0)
-            balance_band = st.number_input("Banda orientativa de balance (min)", min_value=0.0, value=1.2, step=0.1, key="balance_band_minutes")
-            st.caption("1,2 min corresponde al límite conjunto si cuatro campos se redondean a 0,01 h. "
-                       "Si la precisión o las unidades de origen son distintas, ajusta la banda. "
-                       "Es una hipótesis, no una regla para descartar registros.")
             st.caption("Umbrales exploratorios ajustables; los percentiles se calculan dentro de cada línea y periodo.")
     settings = Settings(availability_target=availability, cycle_target_cmin=cycle,
                         loss_threshold_pct=loss, short_stop_minutes=short, long_stop_minutes=long)
@@ -542,13 +414,12 @@ def main():
         raw = input_csv(source, "datos_hackaton.csv", decimal)
         configuration = input_csv(config, "config_hackaton.csv", decimal)
         calendar = read_csv(calendar_file.getvalue(), decimal) if calendar_file else None
-        prepared = prepare_data(raw, configuration, calendar=calendar, time_unit=unit, reference_hours=reference,
-                                balance_tolerance_hours=balance_band / 60)
-        connections = validate_connections(read_csv(connections_file.getvalue(), decimal), prepared.configuration) if connections_file else None
+        prepared = prepare_data(raw, configuration, calendar=calendar, time_unit=unit, reference_hours=reference)
+        connections = None
         sources = {"Producción": source_identity(source, "datos_hackaton.csv"),
                    "Configuración": source_identity(config, "config_hackaton.csv"),
                    "Calendario": f"{calendar_file.name} | SHA-256 {sha256(calendar_file.getvalue()).hexdigest()}" if calendar_file else "No aportado",
-                   "Conexiones": f"{connections_file.name} | SHA-256 {sha256(connections_file.getvalue()).hexdigest()}" if connections_file else "No aportadas"}
+                   "Conexiones": "No aportadas"}
     except (ValueError, OSError, UnicodeError) as error:
         st.error(f"No se pueden preparar los datos: {error}")
         st.stop()
@@ -589,27 +460,23 @@ def main():
     elif operations.empty:
         st.header("Mapa de operaciones")
         st.info("Esta línea no tiene jornadas incluidas en el periodo y escenario seleccionados.")
-        quality_view(prepared, settings, weeks)
     else:
         line_records = records.loc[records.Linea.eq(line)]
         operations_view(operations, records.loc[records.Linea.eq(line)], days.loc[days.Linea.eq(line)], settings,
                         scenario_label, connections, sources)
-        st.download_button("Descargar indicadores de esta línea", operations.to_csv(index=False).encode("utf-8-sig"),
-                           file_name=f"indicadores_{line}.csv", mime="text/csv", key=f"download_line_{line}")
         st.divider()
         st.header("Análisis de la línea")
         analysis = st.radio("Análisis de la línea", ANALYSES, horizontal=True, key="line_analysis", label_visibility="collapsed")
         if analysis == "Microparadas":
             microstop_view(operations, settings, line_records)
-        elif analysis == "Evolución":
-            evolution_view(result, line, operations, settings)
-        elif analysis == "Calendario y calidad":
-            quality_view(prepared, settings, weeks)
-        elif analysis == "Reparto de tiempos por operación":
-            st.header(analysis)
-            time_mix(operations.loc[operations.TR.gt(0)])
+        elif analysis == "Máquinas más problemáticas":
+            problematic_view(result, line, operations, settings)
         else:
-            own_losses_view(operations, line_records, settings, connections)
+            st.header(analysis)
+            ordering = st.selectbox("Orden de las máquinas", ["Orden de línea", "De menor TBF a mayor TBF"], key="times_order")
+            timed = operations.loc[operations.TR.gt(0)]
+            timed = timed.sort_values(["TBF", "Orden_OP", "Operacion"]) if ordering == "De menor TBF a mayor TBF" else order_operations(timed)
+            time_mix(timed)
 
 
 if __name__ == "__main__":
