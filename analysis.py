@@ -8,12 +8,19 @@ import pandas as pd
 from cleaning import DAY_KEYS, FLAGS, OP_KEYS, TIMES, VALUES
 
 STATUS_COLORS = {
-    "Parada propia": "#dc4848", "Desabastecimiento": "#e6bd32",
-    "Saturación": "#ed8738", "Mixto": "#9570b7", "Ciclo elevado": "#4b87bb",
-    "Sin alertas": "#339d78", "Sin producción": "#98a4b5", "Revisar datos": "#667085",
-    "Sin datos": "#b8c0cc",
+    "Desabastecimiento": "#20b8d8", "Saturación": "#a060d0",
+    "Parada propia": "#dc4848", "Buen funcionamiento": "#339d78",
+    "Mixto": "#608cd4", "Otros": "#98a4b5",
+    "Sin producción": "#98a4b5", "Revisar datos": "#98a4b5", "Sin datos": "#98a4b5",
 }
-TIME_COLORS = {"TBF": "#339d78", "TAP": "#dc4848", "DES": "#e6bd32", "SAT": "#ed8738"}
+TIME_COLORS = {"TBF": STATUS_COLORS["Buen funcionamiento"], "TAP": STATUS_COLORS["Parada propia"],
+               "DES": STATUS_COLORS["Desabastecimiento"], "SAT": STATUS_COLORS["Saturación"]}
+OTHER_STATUSES = ("Sin producción", "Revisar datos", "Sin datos")
+
+
+def map_categories(operations):
+    """Conserva el motivo de calidad en status y lo agrupa solo para el mapa."""
+    return operations.status.replace(dict.fromkeys(OTHER_STATUSES, "Otros"))
 
 
 @dataclass(frozen=True)
@@ -24,6 +31,7 @@ class Settings:
     short_stop_minutes: float = 2.0
     long_stop_minutes: float = 15.0
     stop_rate_base: int = 1000
+    microstop_loss_threshold_pct: float = 1.0
 
 
 @dataclass
@@ -77,23 +85,35 @@ def aggregate(records, days, configuration, settings, weekly=False):
     return metrics(grid, settings)
 
 
+def signal_conditions(frame, settings):
+    """Una definición común para colores, filtros, informes y recurrencia."""
+    own = frame.availability_pct.lt(settings.availability_target)
+    des = frame.DES_pct.ge(settings.loss_threshold_pct)
+    sat = frame.SAT_pct.ge(settings.loss_threshold_pct)
+    # Si el conjunto inducido supera el umbral pero ninguna componente lo hace,
+    # usar predominio 1,5; si están equilibradas conservar ambas señales.
+    combined = frame.induced_pct.ge(settings.loss_threshold_pct) & ~des & ~sat
+    dominant_des = frame.DES.ge(1.5 * frame.SAT)
+    dominant_sat = frame.SAT.ge(1.5 * frame.DES)
+    balanced = combined & ~dominant_des & ~dominant_sat
+    des = des | (combined & dominant_des) | balanced
+    sat = sat | (combined & dominant_sat) | balanced
+    return own, des, sat
+
+
 def classify(operations, settings):
     result = operations.copy()
-    own = result.availability_pct.lt(settings.availability_target) | result.TAP_pct.ge(settings.loss_threshold_pct)
-    induced = result.induced_pct.ge(settings.loss_threshold_pct)
-    des = induced & result.DES.ge(1.5 * result.SAT)
-    sat = induced & result.SAT.ge(1.5 * result.DES)
+    own, des, sat = signal_conditions(result, settings)
     result["own_alert"] = own & result.eligible
-    result["des_alert"] = result.DES_pct.ge(settings.loss_threshold_pct) & result.eligible
-    result["sat_alert"] = result.SAT_pct.ge(settings.loss_threshold_pct) & result.eligible
+    result["des_alert"] = des & result.eligible
+    result["sat_alert"] = sat & result.eligible
     result["status"] = np.select(
         [result.observed_days.eq(0),
          result.coverage_pct.lt(100) | result.production_without_runtime.gt(0),
          result.NPR.eq(0) & result.TBF.eq(0), result.NPR.eq(0),
-         (own & induced) | (induced & ~des & ~sat), own, des, sat,
-         result.cycle_cmin.gt(settings.cycle_target_cmin)],
+         (own & (des | sat)) | (des & sat), own, des, sat],
         ["Sin datos", "Revisar datos", "Sin producción", "Revisar datos", "Mixto",
-         "Parada propia", "Desabastecimiento", "Saturación", "Ciclo elevado"], default="Sin alertas")
+         "Parada propia", "Desabastecimiento", "Saturación"], default="Buen funcionamiento")
     result["frequency_p75"] = np.nan
     result["frequency_p25"] = np.nan
     valid = result.eligible & result.stop_duration_reliable
@@ -112,14 +132,127 @@ def classify(operations, settings):
     return result
 
 
+def order_operations(operations, urgent=False):
+    """Urgencia de investigación, no un impacto causal estimado en producción."""
+    result = operations.copy()
+    result["urgency_level"] = np.select(
+        [result.own_alert, result.des_alert | result.sat_alert,
+         result.status.isin(["Revisar datos", "Sin producción", "Sin datos"])],
+        [3, 2, 1], default=0)
+    result["loss_severity_pct"] = result[["TAP_pct", "DES_pct", "SAT_pct"]].max(axis=1)
+    result["recurrence_total"] = result[["recurrence_own", "recurrence_des", "recurrence_sat"]].sum(axis=1)
+    if urgent:
+        return result.sort_values(["urgency_level", "loss_severity_pct", "recurrence_total", "TAP", "Orden_OP", "Operacion"],
+                                  ascending=[False, False, False, False, True, True], na_position="last")
+    return result.sort_values(["Orden_OP", "Operacion"], kind="stable")
+
+
+def state_explanation(row, settings):
+    """Explicación numérica del mismo criterio que utiliza classify()."""
+    if row["status"] == "Sin datos":
+        return ["No hay registros utilizables de esta operación en el periodo seleccionado."]
+    if row["status"] == "Revisar datos":
+        return [f"Cobertura: {row.coverage_pct:.1f}%. Días con producción sin funcionamiento: "
+                f"{int(row.production_without_runtime)}. Piezas registradas: {row.NPR:g}.",
+                "La revisión de calidad tiene prioridad sobre asignar un estado operativo."]
+    if row["status"] == "Sin producción":
+        return ["No hay piezas ni tiempo de funcionamiento en el periodo. Confirmar si la operación debía trabajar; "
+                "no se distingue una operación no planificada de una parada total sin contexto adicional."]
+    own, des, sat = signal_conditions(pd.DataFrame([row]), settings)
+    reasons = [f"TBF/TR: {row.TBF_pct:.2f}%; TAP/TR: {row.TAP_pct:.2f}%; "
+               f"DES/TR: {row.DES_pct:.2f}%; SAT/TR: {row.SAT_pct:.2f}%."]
+    reasons.append(f"Señal propia: {'sí' if own.iloc[0] else 'no'}; disponibilidad propia "
+                   f"{row.availability_pct:.2f}% frente al objetivo de {settings.availability_target:g}%.")
+    reasons.append(f"Señal DES: {'sí' if des.iloc[0] else 'no'}; señal SAT: {'sí' if sat.iloc[0] else 'no'}. "
+                   f"Umbral individual {settings.loss_threshold_pct:g}%. Si solo la suma inducida lo supera, "
+                   "se usa predominio 1,5 o ambas señales cuando están equilibradas.")
+    reasons.append("Dos o más señales propias/inducidas producen estado Mixto. Buen funcionamiento indica "
+                   f"disponibilidad propia ≥ {settings.availability_target:g}% sin señales DES/SAT. "
+                   "El ciclo permanece como indicador, sin categoría de color.")
+    return reasons
+
+
+def validate_connections(connections, configuration):
+    if connections is None:
+        return None
+    result = connections.copy()
+    result.columns = result.columns.str.strip()
+    required = ["Linea", "Origen", "Destino"]
+    if not set(required).issubset(result.columns):
+        raise ValueError("Conexiones: se requieren Linea, Origen y Destino.")
+    for column in required:
+        result[column] = result[column].astype("string").str.strip().replace("", pd.NA)
+    if result[required].isna().any().any() or result.Origen.eq(result.Destino).any():
+        raise ValueError("Las conexiones tienen campos vacíos o una operación conectada consigo misma.")
+    known = set(map(tuple, configuration[OP_KEYS].to_numpy()))
+    if any((r.Linea, r.Origen) not in known or (r.Linea, r.Destino) not in known for r in result.itertuples()):
+        raise ValueError("Las conexiones deben referirse a operaciones de la misma línea configurada.")
+    return result[required].drop_duplicates()
+
+
+def propagation_evidence(operation, records, settings, connections=None):
+    """Coincidencia diaria: nunca se interpreta como causalidad ni retardo."""
+    columns = ["Operacion", "Hipótesis", "Señal", "Días coincidentes", "Horas coincidentes", "Distancia"]
+    if not operation.get("eligible", False):
+        return pd.DataFrame(columns=columns)
+    line = operation.Linea
+    data = records.loc[records.Linea.eq(line) & ~records.day_status.isin(
+        ["closed", "unconfirmed", "calendar_conflict"]) & records.production_without_runtime.eq(0)].copy()
+    if data.empty:
+        return pd.DataFrame(columns=["Operacion", "Hipótesis", "Señal", "Días coincidentes", "Horas coincidentes", "Distancia"])
+    tr = data[TIMES].sum(axis=1)
+    data["availability_pct"] = 100 * _ratio(data.TBF, data.TBF + data.TAP)
+    for kind in ["TAP", "DES", "SAT"]:
+        data[f"{kind}_pct"] = 100 * _ratio(data[kind], tr)
+    data["induced_pct"] = data.DES_pct + data.SAT_pct
+    for column, signal in zip(["own", "des", "sat"], signal_conditions(data, settings)):
+        data[column] = signal
+    subject = data.loc[data.Operacion.eq(operation.Operacion)]
+    connected = connections is not None and not connections.loc[connections.Linea.eq(line)].empty
+    def reachable(reverse=False):
+        if not connected:
+            return {name: None for name in data.Operacion.unique() if name != operation.Operacion}
+        edges = connections.loc[connections.Linea.eq(line)]
+        distances, queue = {}, [(operation.Operacion, 0)]
+        visited = {operation.Operacion}
+        while queue:
+            current, distance = queue.pop(0)
+            candidates = edges.loc[edges.Destino.eq(current), "Origen"] if reverse else edges.loc[edges.Origen.eq(current), "Destino"]
+            for name in candidates:
+                if name not in visited:
+                    visited.add(name)
+                    distances[name] = distance + 1
+                    queue.append((name, distance + 1))
+        return distances
+    upstream, downstream = reachable(True), reachable(False)
+    cases = [("own", "sat", "SAT", upstream, "Posible efecto: SAT aguas arriba"),
+             ("own", "des", "DES", downstream, "Posible efecto: DES aguas abajo"),
+             ("des", "own", "TAP", upstream, "Posible origen del DES recibido"),
+             ("sat", "own", "TAP", downstream, "Posible origen del SAT recibido")]
+    unknown_labels = {("own", "sat"): "SAT coincide con TAP de la elegida; conexión por confirmar",
+                      ("own", "des"): "DES coincide con TAP de la elegida; conexión por confirmar",
+                      ("des", "own"): "TAP coincide con DES de la elegida; conexión por confirmar",
+                      ("sat", "own"): "TAP coincide con SAT de la elegida; conexión por confirmar"}
+    evidence = []
+    for subject_signal, other_signal, time_column, neighbours, hypothesis in cases:
+        dates = subject.loc[subject[subject_signal], DAY_KEYS].drop_duplicates()
+        matching = data.loc[data.Operacion.isin(neighbours) & data[other_signal]].merge(dates, on=DAY_KEYS, how="inner")
+        for name, frame in matching.groupby("Operacion"):
+            evidence.append({"Operacion": name, "Hipótesis": hypothesis if connected else unknown_labels[(subject_signal, other_signal)],
+                             "Señal": time_column, "Días coincidentes": len(frame),
+                             "Horas coincidentes": frame[time_column].sum(), "Distancia": neighbours[name]})
+    columns = ["Operacion", "Hipótesis", "Señal", "Días coincidentes", "Horas coincidentes", "Distancia"]
+    return pd.DataFrame(evidence, columns=columns).drop_duplicates().sort_values(
+        ["Días coincidentes", "Horas coincidentes"], ascending=False)
+
+
 def recommendation(row):
     actions = {
         "Parada propia": "Revisar las causas propias y los registros de mantenimiento.",
         "Desabastecimiento": "Revisar suministro y operaciones que alimentan este puesto.",
         "Saturación": "Revisar salida, buffers y operaciones receptoras.",
         "Mixto": "Separar las incidencias propias de las esperas externas antes de intervenir.",
-        "Ciclo elevado": "Validar unidades, contador, producto y capacidad de la operación.",
-        "Sin alertas": "Mantener seguimiento con los umbrales y periodo seleccionados.",
+        "Buen funcionamiento": "Mantener el seguimiento de disponibilidad y el mantenimiento preventivo.",
         "Sin producción": "Confirmar si debía trabajar; puede estar no planificada o totalmente parada.",
         "Revisar datos": "Revisar cobertura y coherencia de tiempos y contadores antes de comparar.",
         "Sin datos": "Localizar los registros o confirmar si esta operación estaba prevista.",
@@ -136,7 +269,8 @@ def analyse(records, days, configuration, settings=None):
     settings = settings or Settings()
     if not (0 < settings.availability_target <= 100 and settings.cycle_target_cmin > 0
             and 0 < settings.loss_threshold_pct <= 100 and settings.stop_rate_base > 0
-            and 0 < settings.short_stop_minutes < settings.long_stop_minutes):
+            and 0 < settings.short_stop_minutes < settings.long_stop_minutes
+            and 0 < settings.microstop_loss_threshold_pct <= 100):
         raise ValueError("Los objetivos o umbrales de análisis no son válidos.")
     operations = classify(aggregate(records, days, configuration, settings), settings)
     weekly = classify(aggregate(records, days, configuration, settings, weekly=True), settings)

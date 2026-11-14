@@ -92,6 +92,15 @@ class PipelineTests(unittest.TestCase):
         row = self.result(prepare_data(self.base().assign(NAP=0), self.config)).operations.iloc[0]
         self.assertTrue(pd.isna(row.mean_stop_minutes))
 
+    def test_time_tolerance_boundary_is_not_a_float_false_positive(self):
+        source = self.base().assign(TBF=20, TAP=1, SAT=0)
+        source["DES"] = [0.9, 1.1]  # 21,9 y 22,1 h: ambos están en la frontera.
+        prepared = prepare_data(source, self.config)
+        self.assertFalse(prepared.records.time_reference_mismatch.any())
+        source["DES"] = [0.89, 1.11]
+        prepared = prepare_data(source, self.config)
+        self.assertTrue(prepared.records.time_reference_mismatch.all())
+
     def test_unit_conversion_and_parallel_order(self):
         source = self.base()
         source[["TBF", "TAP", "DES", "SAT"]] *= 60

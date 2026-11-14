@@ -69,7 +69,10 @@ def _calendar(source):
     hours = calendar.Planned_Hours.dropna()
     if not np.isfinite(hours).all() or hours.lt(0).any():
         raise ValueError("Planned_Hours debe contener horas no negativas y finitas.")
-    return calendar[DAY_KEYS + ["Planned_Production", "Planned_Hours"]]
+    if "Motivo" not in calendar:
+        calendar["Motivo"] = pd.NA
+    _text(calendar, ["Motivo"])
+    return calendar[DAY_KEYS + ["Planned_Production", "Planned_Hours", "Motivo"]]
 
 
 def prepare_data(source, configuration, *, calendar=None, time_unit="hours",
@@ -139,6 +142,7 @@ def prepare_data(source, configuration, *, calendar=None, time_unit="hours",
     if calendar_data is None:
         days["Planned_Production"] = np.nan
         days["Planned_Hours"] = np.nan
+        days["Motivo"] = pd.NA
     else:
         days = days.merge(calendar_data, on=DAY_KEYS, how="left", validate="one_to_one")
     no_activity = days.complete_coverage & days.all_zero_runtime.eq(True) & days.all_zero_output.eq(True)
@@ -152,9 +156,13 @@ def prepare_data(source, configuration, *, calendar=None, time_unit="hours",
         days[column] = days[column].astype(int)
     days["Periodo"] = (days.Year.astype(str) + "-S" + days.Week.astype(str).str.zfill(2)
                         + "-D" + days.Jour.astype(str))
+    clean = clean.drop(columns=[column for column in days if column not in DAY_KEYS and column in clean])
     clean = clean.merge(days, on=DAY_KEYS, how="left", validate="many_to_one")
     clean["recorded_hours"] = clean[TIMES].sum(axis=1)
-    clean["time_reference_mismatch"] = clean.recorded_hours.sub(clean.reference_hours).abs().gt(tolerance_hours)
+    difference = clean.recorded_hours.sub(clean.reference_hours).abs()
+    # Margen numérico de 1e-9 h (~3,6 microsegundos), no una tolerancia operativa adicional.
+    clean["time_reference_mismatch"] = difference.gt(tolerance_hours) & ~np.isclose(
+        difference, tolerance_hours, atol=1e-9, rtol=0)
     audit = pd.Series({"Registros originales": len(source), "Copias idénticas retiradas": len(duplicates),
                        "Registros apartados": len(quarantine), "Registros utilizables": len(clean),
                        **{name: int(values.sum()) for name, values in issues.items()}}, name="Cantidad")

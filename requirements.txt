@@ -1,4 +1,5 @@
 pandas
 numpy
-streamlit
+streamlit>=1.63
 matplotlib
+reportlab>=4.0
