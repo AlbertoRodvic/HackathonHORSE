@@ -199,8 +199,8 @@ def classification_report(settings, line, weeks, scenario):
         p("Mixto se representa mitad naranja y mitad amarillo. Los filtros por categoría "
           "solo cambian las máquinas visibles. Las cajas muestran únicamente el nombre de la máquina. "
           "Los colores resumen el periodo; las coincidencias diarias no prueban causalidad y un elemento lento no confirma una avería."),
-        p("Por urgencia de reparación ordena el mapa de menor a mayor porcentaje TBF/TR, sin agrupar primero por color. "
-          "Los empates se resuelven por orden configurado y nombre; los porcentajes no definidos se sitúan al final."),
+        p("Por urgencia de reparación agrupa por color: TAP, SAT, DES, mixto y funcionamiento aceptable; los casos de datos se muestran aparte. "
+          "Dentro de cada grupo ordena de menor a mayor TBF/TR. Los empates se resuelven por orden configurado y nombre; los porcentajes no definidos se sitúan al final de su grupo."),
     ], "LOSSIA · Criterios de clasificación y colores")
 
 
@@ -299,7 +299,7 @@ def technical_report(prepared, records, days, result, settings, scenario, *, con
                 f"Umbrales actuales: breve < {settings.short_stop_minutes:g} min; prolongada >= {settings.long_stop_minutes:g} min; P25 distingue pocas y prolongadas. Son hipótesis ajustables, no diagnósticos de sensores ni inventario de eventos."),
               PageBreak(), heading("5 · Mapa de operaciones: lectura y navegación"),
               p("La vista de línea comienza por el mapa. Cada caja contiene exclusivamente el nombre y el color. Se recorre en una fila horizontal desplazable o se abre la cuadrícula completa. Al pulsar una caja, se muestra su evidencia debajo y se permite descargar el diagnóstico PDF."),
-              p("Orden de línea: Orden_OP y nombre para desempatar, sin inferir conexiones. Por urgencia de reparación: porcentaje TBF/TR de menor a mayor, sin prioridad previa por categoría o color. Los empates se resuelven por Orden_OP y nombre; los porcentajes no definidos quedan al final. Es una cola de investigación, no una estimación causal de producción perdida."),
+              p("Orden de línea: Orden_OP y nombre para desempatar, sin inferir conexiones. Por urgencia de reparación: grupos de color TAP, SAT, DES, mixto y funcionamiento aceptable, con casos de datos aparte. Dentro de cada grupo, TBF/TR de menor a mayor. Los empates se resuelven por Orden_OP y nombre; los porcentajes no definidos quedan al final de su grupo. Es una cola de investigación, no una estimación causal de producción perdida."),
               p("El filtro por categoría permite desplegar Otros: Sin producción, Revisar datos y Sin datos. Funcionamiento aceptable reúne Buen funcionamiento y Elemento lento, con colores distintos y un filtro adicional entre ambos. Las paradas totales con TBF cero y TAP positivo se destacan al principio. Los filtros no cambian el color. La leyenda permanece fuera de las cajas.")]
     for line, operations in result.operations.groupby("Linea"):
         operations = order_operations(operations)

@@ -237,7 +237,7 @@ def operations_view(operations, records, days, settings, scenario, connections, 
                + "Los filtros no cambian los colores. "
                + "El orden no implica conexión física; el color resume el periodo, no el estado instantáneo.")
     if order_mode == "Por urgencia de reparación":
-        st.caption("Urgencia: de menor a mayor porcentaje de funcionamiento TBF/TR, con valores no definidos al final.")
+        st.caption("Urgencia: TAP, SAT, DES, mixto y funcionamiento aceptable; dentro de cada color, de menor a mayor TBF/TR. Los casos de datos se agrupan aparte.")
     expanded = st.session_state.get("map_expanded", False)
     selected = st.session_state.get("selected_operation")
     if selected not in operations.Operacion.tolist():
@@ -349,14 +349,14 @@ def microstop_view(operations, settings, records):
 
 def problematic_view(result, line, operations, settings):
     st.header("Máquinas más problemáticas")
-    below = operations.loc[operations.eligible & operations.TBF_pct.lt(settings.availability_target)]
-    st.subheader(f"Máquinas con funcionamiento / TR < {settings.availability_target:g}% · {len(below)}")
+    below = operations.loc[operations.eligible & operations.availability_pct.lt(settings.availability_target)]
+    st.subheader(f"Máquinas con disponibilidad propia < {settings.availability_target:g}% · {len(below)}")
     if below.empty:
         st.info("No hay operaciones comparables por debajo del objetivo.")
     else:
-        st.caption("Las barras y el filtro usan el mismo indicador: TBF / (TBF + TAP + DES + SAT). "
+        st.caption("Las barras y el filtro usan disponibilidad propia: TBF / (TBF + TAP). DES y SAT quedan fuera del denominador. "
                    "Estar por debajo del objetivo no demuestra una avería propia.")
-        plot(investigation_figure(below, settings, metric="TBF_pct"))
+        plot(investigation_figure(below, settings, metric="availability_pct"))
     st.subheader("Qué pérdidas se repiten")
     weekly = result.weekly.loc[result.weekly.Linea.eq(line)]
     for tab, kind in zip(st.tabs(["Parada propia · TAP", "Saturación · SAT", "Desabastecimiento · DES"]), ["TAP", "SAT", "DES"]):

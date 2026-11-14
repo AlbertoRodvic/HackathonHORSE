@@ -146,7 +146,13 @@ def order_operations(operations, urgent=False):
     result["loss_severity_pct"] = result[["TAP_pct", "DES_pct", "SAT_pct"]].max(axis=1)
     result["recurrence_total"] = result[["recurrence_own", "recurrence_des", "recurrence_sat"]].sum(axis=1)
     if urgent:
-        return result.sort_values(["TBF_pct", "Orden_OP", "Operacion"], kind="stable", na_position="last")
+        result["color_order"] = result.status.map({
+            "Parada propia": 0, "Saturación": 1, "Desabastecimiento": 2, "Mixto": 3,
+            "Buen funcionamiento": 4, "Elemento lento": 4, "Funcionamiento aceptable": 4,
+            "Sin producción": 5, "Revisar datos": 6, "Sin datos": 7,
+        }).fillna(8)
+        return result.sort_values(["color_order", "TBF_pct", "Orden_OP", "Operacion"],
+                                  kind="stable", na_position="last")
     return result.sort_values(["Orden_OP", "Operacion"], kind="stable")
 
 

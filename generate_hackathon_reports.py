@@ -277,11 +277,11 @@ def eda_report(s, images, tables, prepared, records, result):
     focus = s['priorities'].sort_values('TAP', ascending=False)
     story += [frame_table(focus, ['Operacion', 'availability_pct', 'TAP', 'TAI', 'NPR', 'weeks_below_target'],
                           ['Operación', 'Dp %', 'TAP h', 'DES+SAT h', 'Piezas', 'Semanas Dp<90'], widths=[100, 70, 75, 95, 80, WIDTH - 420]),
-              caption("Cinco operaciones comparables incumplen disponibilidad propia. Esta selección del notebook no equivale a las 56 bajo TBF/TR en la aplicación."),
+              caption("Cinco operaciones comparables incumplen disponibilidad propia. La gráfica de Máquinas más problemáticas usa esta misma selección; el mapa conserva su clasificación por TBF/TR."),
               picture(images[13][1], 260),
               p("PM2250 permite ilustrar la diferencia: el tiempo propio y las esperas se separan antes de decidir una actuación. ST2235 acumula TAP elevado con una frecuencia muy alta y media muy breve. No se declara que sea el origen de las esperas del resto de la línea."),
               p("Las paradas totales se revisan aparte: PM2130 presenta TBF=0, NPR=0 y 351,87 h de TAP en el escenario provisional. No desaparece por exigir producción positiva en los ratios; hay que confirmar si debía trabajar.")]
-    story.append(p("En el mapa actual, «Por urgencia de reparación» ordena de menor a mayor porcentaje TBF/TR, igual que la opción de ordenación por TBF de la gráfica de tiempos. No antepone categorías de color; los empates se resuelven por orden configurado y nombre, y los porcentajes no definidos quedan al final."))
+    story.append(p("En el mapa actual, «Por urgencia de reparación» agrupa por color en orden TAP, SAT, DES, mixto y funcionamiento aceptable, con los casos de datos aparte. Dentro de cada grupo ordena por TBF/TR de menor a mayor; los empates se resuelven por orden configurado y nombre. La gráfica de tiempos conserva la ordenación global por TBF/TR, sin agrupar por color."))
 
     story += section(7, "Microparadas: frecuencia y duración conjuntamente", "Notebook: apartado 5; celda 15. Se conserva su hipótesis exploratoria de media < 60 segundos.")
     story += [figure_image(notebook_micro_figure(points, s['MICROSTOP_MEAN_SECONDS']), "eda_microparadas", 260),
@@ -441,10 +441,10 @@ def solution_report(s, prepared, records, days, result, manifest):
     story += section(4, "Mapa, prioridades y diagnóstico explicable", "Código: order_operations, operations_view, operation_report y state_explanation.")
     story += [map_drawing(order_operations(ops)), Spacer(1, 8),
               caption("91 operaciones en el orden configurado. Se conserva únicamente el nombre dentro de cada caja; el orden no se interpreta como una conexión física."),
-              p("Dos ordenaciones: orden de configuración o «Por urgencia de reparación». La segunda ordena de menor a mayor porcentaje de funcionamiento TBF/TR, sin agrupar primero por color. Desempata por Orden_OP y nombre; los porcentajes no definidos quedan al final. Se ordena el mismo porcentaje que muestra la gráfica de tiempos, no las horas TBF absolutas. Es una prioridad de investigación, no un ranking de impacto causal."),
+              p("Dos ordenaciones: orden de configuración o «Por urgencia de reparación». La segunda agrupa por color: TAP, SAT, DES, mixto y funcionamiento aceptable; los casos de datos se muestran aparte. Dentro de cada grupo ordena TBF/TR de menor a mayor, con desempate por Orden_OP y nombre y porcentajes no definidos al final de su grupo. Usa el porcentaje de funcionamiento, no horas absolutas. Es una prioridad de investigación, no un ranking de impacto causal."),
               p("La ficha aparece tras descargar los criterios y conserva métricas, evidencias y posibles efectos filtrables. El PDF incluye fórmulas aplicadas, razones del color, registros diarios, balance, fuente y parámetros. Revisión de datos se muestra al final del mapa."),
               p("PM2130 se destaca al principio: TBF=0, NPR=0 y 351,87 h de TAP. Permanece como Sin producción dentro de Otros; se confirma planificación antes de concluir una avería continua. ST_0030 tiene cero horas en todas las categorías y requiere revisar actividad o captura."),
-              p("La gráfica de tiempos ordena por TBF/TR, el mismo porcentaje que dibuja, y no por horas TBF absolutas. La gráfica de máquinas bajo el objetivo se muestra una sola vez y usa TBF/TR tanto para filtrar como para dibujar.")]
+              p("La gráfica de tiempos ordena por TBF/TR, el mismo porcentaje que dibuja, y no por horas TBF absolutas. En Máquinas más problemáticas, la gráfica del apartado 4 del EDA filtra y dibuja disponibilidad propia: TBF/(TBF + TAP) <90 %, cinco operaciones comparables en estos datos. Conserva los colores TAP rojo, DES amarillo y SAT naranja. El mapa continúa usando funcionamiento/TR para su clasificación y ordenación.")]
 
     story += section(5, "Algoritmo de microparadas y recomendaciones", "Código: classify, microstop_points y stop_action_plan. Separado de la asignación del color operativo.")
     story += [figure_image(microstop_figure(ops, settings), "solucion_microparadas", 245),
@@ -501,7 +501,7 @@ def solution_report(s, prepared, records, days, result, manifest):
 
     story += section(9, "Validación, alcance y escalabilidad", "Los criterios de evaluación se separan: EDA 30 %, solución 40 %, visualización/funcionalidad 15 % y pitch 15 %.")
     story += [table(["Dimensión", "Evidencia / siguiente paso"], [
-                  ["Validación implementada", "55 pruebas del proyecto: unidades, claves, cierres, medias de sumas, colores, elegibilidad, recurrencia, orden de barras, filtros y PDF. No miden exactitud de causas industriales."],
+                  ["Validación implementada", "56 pruebas del proyecto: unidades, claves, cierres, medias de sumas, colores, elegibilidad, recurrencia, orden de barras, filtros y PDF. No miden exactitud de causas industriales."],
                   ["Usabilidad", "Tres apartados, cajas con nombre, filtros, detalle de operación y PDF reproducible. Se separan calidad, funcionamiento y pérdidas."],
                   ["Generalización", "Otras líneas y periodos con el mismo contrato diario y universo configurado; objetivos, unidades y calendario ajustables."],
                   ["Límites actuales", "CSV y pandas en memoria. Sin autenticación por roles, base de datos, despliegue distribuido ni benchmark de grandes volúmenes."],
@@ -518,7 +518,9 @@ def solution_report(s, prepared, records, days, result, manifest):
               p("Entradas: datos_hackaton.csv y config_hackaton.csv. Sin calendario ni conexiones aportados. Tiempos de entrada en horas; escenario provisional; objetivo TBF/TR 90 %; ciclo 80 cmin/pieza; breve 2 min; prolongada 15 min; FPM por 1.000 piezas."),
               p("Reproducción: ejecutar generate_hackathon_reports.py. El generador recalcula el notebook y prepara por separado la solución actual. Guarda indicadores por operación, clasificación semanal y datos de soporte en outputs/hackathon_assets, junto con el manifiesto de parámetros y fuentes."),
               p("Comprobaciones de consistencia de esta entrega", "HeadingLossia"),
-              p(f"{len(ops)} operaciones únicas; {len(below)} operaciones elegibles bajo el objetivo; {int(alerts.sum())} con señal predominante; {len(microstop_points(ops))} puntos únicos de microparadas. Los registros originales y el notebook no se sobrescriben."),
+              p(f"{len(ops)} operaciones únicas; {len(below)} con funcionamiento/TR bajo el objetivo y señal predominante; "
+                f"{int((ops.eligible & ops.availability_pct.lt(90)).sum())} con disponibilidad propia bajo el 90 %, representadas en la gráfica de Máquinas más problemáticas; "
+                f"{len(microstop_points(ops))} puntos únicos de microparadas. Los registros originales y el notebook no se sobrescriben."),
               p("Mensaje para la presentación", "HeadingLossia"),
               p("La solución no confunde una operación que espera con una avería confirmada. Explica qué se observa, permite localizar el registro y propone cómo comprobar si una intervención mejora el resultado. El EDA justifica las decisiones; la arquitectura hace que sean repetibles.")]
     return story

@@ -61,15 +61,16 @@ class CriteriaAndReportTests(unittest.TestCase):
         self.assertEqual(STATUS_COLORS["Elemento lento"], STATUS_COLORS["Funcionamiento aceptable"])
         self.assertEqual(STATUS_COLORS["Buen funcionamiento"], STATUS_COLORS["Funcionamiento aceptable"])
 
-    def test_urgency_uses_runtime_percentage_across_categories_and_keeps_missing_last(self):
-        statuses = ["Parada propia", "Saturación", "Desabastecimiento", "Mixto", "Buen funcionamiento", "Elemento lento", "Sin datos"]
+    def test_urgency_groups_colors_then_runtime_and_keeps_green_subtypes_together(self):
+        statuses = ["Parada propia", "Saturación", "Desabastecimiento", "Mixto", "Buen funcionamiento", "Elemento lento", "Sin datos",
+                    "Parada propia", "Buen funcionamiento", "Revisar datos", "Sin producción"]
         operations = pd.concat([self.result.operations.iloc[[0]]] * len(statuses), ignore_index=True)
         operations["status"] = statuses
         operations["Operacion"] = [f"OP{index}" for index in range(len(statuses))]
         operations["Orden_OP"] = list(range(len(statuses)))
-        operations["TBF_pct"] = [70, 60, 80, 50, 95, 90, float("nan")]
+        operations["TBF_pct"] = [70, 60, 80, 50, 95, 90, float("nan"), 45, 92, 0, 0]
         ordered = order_operations(operations.iloc[::-1], urgent=True)
-        self.assertEqual(ordered.Operacion.tolist(), ["OP3", "OP1", "OP0", "OP2", "OP5", "OP4", "OP6"])
+        self.assertEqual(ordered.Operacion.tolist(), ["OP7", "OP0", "OP1", "OP2", "OP3", "OP5", "OP8", "OP4", "OP10", "OP9", "OP6"])
 
     def test_runtime_threshold_gates_all_stop_types_and_weekly_signals(self):
         cases = [(90, 10, 0, 0, "Buen funcionamiento"),
@@ -246,6 +247,27 @@ class MapInterfaceTests(unittest.TestCase):
         self.assertTrue(any(e.proto.label == "Descargar diagnóstico PDF" for e in app.get("download_button")))
         self.assertFalse(any(e.label == "Por qué tiene este color" for e in app.expander))
         self.assertNotIn("Registros diarios de la operación seleccionada", [s.value for s in app.subheader])
+
+    def test_problematic_chart_filters_and_draws_own_availability(self):
+        from unittest.mock import patch
+        from diagnostics import investigation_figure
+        app = self.app()
+        captured = []
+
+        def capture(operations, settings, metric="availability_pct"):
+            captured.append((operations.copy(), metric))
+            return investigation_figure(operations, settings, metric=metric)
+
+        with patch("diagnostics.investigation_figure", side_effect=capture):
+            app.radio(key="line_analysis").set_value("Máquinas más problemáticas").run()
+        self.assertFalse(app.exception)
+        self.assertEqual(len(captured), 1)
+        operations, metric = captured[0]
+        # A, C y X están bajo el 90 % de TBF/TR, pero tienen Dp=100 %: no deben entrar.
+        self.assertEqual(operations.Operacion.tolist(), ["B"])
+        self.assertEqual(metric, "availability_pct")
+        self.assertTrue(operations.availability_pct.lt(90).all())
+        self.assertIn("Máquinas con disponibilidad propia < 90% · 1", [s.value for s in app.subheader])
 
     def test_effect_filter_keeps_only_the_selected_signal(self):
         app = self.app()
