@@ -114,6 +114,7 @@ def source_identity(upload, filename):
 
 
 def summary_view(result, configuration):
+    others_view(result.operations)
     st.header("Una vista de cada línea")
     for line in sorted(configuration.Linea.unique()):
         operations = result.operations.loc[result.operations.Linea.eq(line)]
@@ -139,11 +140,13 @@ def others_view(operations):
     others = operations.loc[operations.status.isin(OTHER_STATUSES)]
     if others.empty:
         return
-    st.subheader("Otros")
+    st.subheader("Revisión prioritaria")
+    st.warning(f"{len(others)} operaciones requieren revisión de planificación o datos. "
+               "Confirmar estos casos antes de interpretar sus pérdidas como averías.")
     actions = {
         "Sin producción": ("Sin producción", "Jefe de Unidad: confirmar si estas máquinas debían producir y su planificación. "
                            "Mantenimiento: si debían trabajar, investigar la parada total y registrar la causa."),
-        "Revisar datos": ("Revisa datos", "Jefe de Unidad: completar las jornadas que faltan y contrastar la producción registrada. "
+        "Revisar datos": ("Revisar datos", "Jefe de Unidad: completar las jornadas que faltan y contrastar la producción registrada. "
                          "Mantenimiento: comprobar contadores, sensores y coherencia de los tiempos."),
         "Sin datos": ("Sin datos", "Jefe de Unidad: confirmar si las máquinas estaban previstas y localizar sus registros. "
                      "Mantenimiento: revisar la captura de datos si faltan registros de máquinas que estaban activas."),
@@ -151,10 +154,12 @@ def others_view(operations):
     for status, (label, action) in actions.items():
         group = others.loc[others.status.eq(status)]
         if not group.empty:
-            with st.expander(f"{label} · {len(group)} máquinas"):
+            with st.expander(f"{label} · {len(group)} máquinas", expanded=True):
                 st.write("**Máquinas:** " + ", ".join(group.Operacion.astype(str)))
                 st.write(action)
-                table(group[["Operacion", "observed_days", "expected_days", "recommendation"]])
+                table(group[["Linea", "Operacion", "TBF", "TAP", "NPR", "coverage_pct",
+                             "observed_days", "expected_days", "recommendation"]])
+    st.divider()
 
 
 def diagnostic(row, settings):
@@ -176,6 +181,7 @@ def diagnostic(row, settings):
 
 
 def operations_view(operations, records, days, settings, scenario, connections, sources):
+    others_view(operations)
     st.header("Mapa de operaciones")
     st.caption("Cada caja es una operación. Desliza la fila o abre la vista completa; pulsa una caja para ver su diagnóstico debajo.")
     controls = st.columns([1.1, 1.8, 1.2])
@@ -234,7 +240,6 @@ def operations_view(operations, records, days, settings, scenario, connections, 
             for _, row in visible.iterrows():
                 tile(row)
     st.markdown("<style>" + "".join(styles) + "</style>", unsafe_allow_html=True)
-    others_view(visible)
     if selected is None:
         st.info("Selecciona una operación en el mapa para ver su estado, evidencias y PDF de diagnóstico.")
     else:

@@ -196,7 +196,7 @@ class MapInterfaceTests(unittest.TestCase):
         self.assertFalse(app.exception)
         self.assertEqual(app.header[0].value, "Una vista de cada línea")
 
-    def test_others_only_shows_present_reasons_and_actions_below_map(self):
+    def test_priority_review_shows_reasons_above_map_and_survives_filters(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "data").mkdir()
@@ -212,18 +212,19 @@ class MapInterfaceTests(unittest.TestCase):
             script = Path("app.py").read_text(encoding="utf-8").replace(
                 "ROOT = Path(__file__).resolve().parent", f"ROOT = Path({str(root)!r})")
             app = AppTest.from_string(script, default_timeout=60).run()
+            self.assertIn("Revisión prioritaria", [s.value for s in app.subheader])
             app.button(key="line_L1").click().run()
             self.assertFalse(app.exception)
-            self.assertIn("Otros", [s.value for s in app.subheader])
+            self.assertIn("Revisión prioritaria", [s.value for s in app.subheader])
             labels = [e.label for e in app.expander]
-            for label in ["Sin producción · 1 máquinas", "Revisa datos · 1 máquinas", "Sin datos · 1 máquinas"]:
+            for label in ["Sin producción · 1 máquinas", "Revisar datos · 1 máquinas", "Sin datos · 1 máquinas"]:
                 self.assertIn(label, labels)
             self.assertIn("Otros", app.multiselect(key="map_filters").options)
             self.assertNotIn("Buen funcionamiento", app.multiselect(key="map_filters").options)
             self.assertTrue(any("Jefe de Unidad:" in m.value and "Mantenimiento:" in m.value for m in app.markdown))
             app.multiselect(key="map_filters").set_value(["Parada propia"]).run()
             self.assertFalse(app.exception)
-            self.assertNotIn("Otros", [s.value for s in app.subheader])
+            self.assertIn("Revisión prioritaria", [s.value for s in app.subheader])
 
 
 if __name__ == "__main__":
