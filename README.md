@@ -1,5 +1,59 @@
 # 🏭 Reto LOSSIA: Detección Inteligente de Máquinas Penalizantes
 
+## Entrega sin interfaz y validación del impacto
+
+```powershell
+.\HORSE\Scripts\python.exe run_analysis.py --output outputs/analisis
+```
+
+Genera CSV con indicadores, candidatas, paradas totales diarias, evaluación de microparadas,
+comparaciones de impacto para **todas las demás operaciones**, resumen de alcance y registros
+de origen; un gráfico PNG por línea y un informe PDF. `parametros.json` conserva escenario,
+parámetros y huellas de los archivos. Opciones: `--data`, `--config`, `--calendar`,
+`--connections`, `--scenario all|confirmed|provisional` y `--microstop-loss-pct`.
+FPM se expresa por **1.000 piezas**, base acordada para el reto.
+
+El segundo paso después de localizar pérdidas propias es contrastar DES y SAT en las otras
+operaciones en días con y sin señal propia de la candidata. Los porcentajes usan sumas de
+tiempos / sumas de TR; hacen falta al menos tres días de cada grupo. Se muestran coincidencias,
+diferencia en puntos porcentuales, correlación de rangos exploratoria (con al menos seis días
+y variación), días con discrepancia horaria y conexiones compatibles cuando se aportan.
+Una diferencia positiva **no es significación estadística ni prueba causal**. Si la candidata
+presenta señal todos los días, no se inventa un grupo de control. Sin datos pareados, se informa
+la falta de cobertura en vez de concluir ausencia de impacto. Las operaciones con DES y SAT
+cuentan una sola vez en el resumen. No se suman tiempos inducidos como producción recuperable.
+
+La topología opcional `Linea,Origen,Destino` permite recorrer ramas. Sin ella, se estudian
+asociaciones con conexión pendiente; `Orden_OP` no crea conexiones. Una operación sin ruta
+en la tabla aportada no se considera automáticamente inmune a una causa común o a enlaces
+faltantes. Este análisis amplía la evidencia y **no cambia los colores ni el contador semanal**.
+
+Las paradas totales (`TBF=0`, `NPR=0`, tiempo registrado positivo) tienen una lista separada,
+aunque no entren en el ranking que requiere producción. Si el calendario de línea indica
+producción o hay actividad en otras operaciones, se marca prioridad de investigación alta.
+Siempre se confirma si la operación concreta debía trabajar: planificación de línea no es
+planificación individual. Las paradas totales con TAP propio se añaden a las candidatas de
+impacto; las puramente inducidas se conservan como esperas externas. Los cierres y los días
+sin actividad por confirmar permanecen diferenciados, conforme al escenario seleccionado.
+
+El análisis diario de microparadas busca medias inferiores al umbral breve y FPM superior o
+igual al P75 de la línea. El P75 se calcula con agregados por operación de días con tiempos y
+contadores consistentes. Un día incoherente no oculta otros días fiables de esa operación.
+Se cuantifican días, paradas y TAP completo en días compatibles, **no tiempo confirmado de
+microparadas**. Como umbral exploratorio de relevancia se usa el 1% del TR de días válidos
+(configurable); no es una prueba estadística. Se trata de interrupciones breves potencialmente
+significativas para la producción, no de averías grandes confirmadas. Validar sensores,
+atascos y alimentación con eventos individuales. La media puede mezclar paradas cortas y largas.
+
+El gráfico del apartado 4 del notebook se amplía manteniendo las mismas operaciones en cinco
+paneles: disponibilidad, TAP/DES/SAT en horas, FPM, ciclo y duración media. Se incluye en PNG,
+PDF y la sección Evolución de la aplicación. Cada mapa semanal sigue seleccionando por su
+propio indicador; no se modifica ahora el criterio compartido de color y recurrencia.
+
+Prevenir recurrencias tiene prioridad alta como seguimiento: registrar causa, intervención
+y evolución posterior de TAP/TR, FPM y señales recurrentes con carga y producto comparables.
+El histórico actual no identifica averías repetidas concretas ni permite prometer predicción.
+
 ## Ejecutar el análisis local
 
 ```powershell
@@ -13,7 +67,7 @@ nube de posibles microparadas, evolución de TAP/DES/SAT y revisión de calidad.
 `cleaning.py` prepara y audita los registros; `analysis.py` calcula los indicadores sin depender de la interfaz.
 
 El calendario de fábrica es opcional: `Linea,Year,Week,Jour,Planned_Production`, con valores
-0 (cierre) o 1 (producción prevista), y `Planned_Hours` opcional en horas. Los días sin actividad
+0 (cierre) o 1 (producción prevista), y `Planned_Hours` (horas) y `Motivo` opcionales. Los días sin actividad
 no se consideran festivos automáticamente. Se pueden comparar todos los registros, excluir
 solo cierres confirmados o excluir provisionalmente días sin actividad pendientes de confirmar.
 Una parada total en un día con producción prevista se conserva. No se eliminan todas las filas con `TBF = 0`.
@@ -22,6 +76,31 @@ La variable `mean_stop_minutes = TAP * 60 / NAP` usa TAP normalizado a horas y s
 tras sumar el periodo por operación. Con NAP cero queda sin definir. Si los contadores diarios
 son incompatibles, se muestra la media con aviso y no se usa para clasificar posibles microparadas.
 Los colores resumen el periodo: no representan estados instantáneos ni demuestran causalidad.
+
+### Mapa e informes PDF
+
+Al abrir una línea, la primera vista es el **Mapa de operaciones**: cajas completamente coloreadas,
+con solo el nombre, en una fila horizontal desplazable. **Ver todas en pantalla** abre la cuadrícula.
+Se puede ordenar por configuración o urgencia y filtrar por señales propias, DES y SAT (unión de filtros).
+Las operaciones mixtas pueden pertenecer a varios filtros. El detalle aparece debajo al seleccionar una caja.
+
+Cada operación permite descargar un diagnóstico PDF con reglas numéricas, indicadores, registros de origen,
+fuentes y posibles relaciones con otras operaciones. Para estudiar conexiones reales se puede cargar un CSV
+`Linea,Origen,Destino`. Sin topología, solo se muestran coincidencias diarias con conexión por confirmar.
+Incluso con topología no se afirma causalidad ni se calculan retardos o buffers sin eventos temporales.
+
+El apartado **Informe y criterio** genera el informe técnico con EDA, limpieza, fórmulas, leyenda,
+mapa completo, gráficas, escalabilidad y limitaciones. También se puede generar sin interfaz:
+
+```powershell
+python reports.py --output outputs/informe_tecnico_LOSSIA.pdf
+```
+
+Opciones: `--data`, `--config`, `--calendar`, `--connections` y `--scenario all|confirmed|provisional`.
+Los PDF generados se guardan en `outputs/`, que sigue excluido de Git.
+Las reglas operativas de color, filtro y recurrencia comparten `signal_conditions()`; la leyenda del PDF
+documenta la precedencia y los umbrales. Las ideas de propagación del plan inferior requieren validación
+y no implican que se haya identificado una máquina responsable con estos acumulados diarios.
 
 ```powershell
 python -m unittest discover -s tests -v
