@@ -33,7 +33,7 @@ La secuencia seguida ha sido:
 4. Comparar escenarios de calendario antes de interpretar los indicadores.
 5. Agrupar por operación y periodo, distinguir tipos de pérdida y priorizar comprobaciones.
 
-Los resultados numéricos de este informe se han recalculado sobre los archivos actuales con el procedimiento de preparación y análisis del proyecto, sin aportar calendario de fábrica ni tabla de conexiones.
+Los resultados numéricos de este informe se han recalculado sobre los archivos actuales con el procedimiento de preparación y análisis del proyecto, sin aportar calendario de fábrica ni tabla de conexiones. La descripción corresponde a la versión actual de Streamlit, con objetivo de funcionamiento/TR del 90 %, clasificación por pérdida predominante, ciclo de referencia de 80 cmin/pieza y escenario provisional de 16 jornadas.
 
 <!-- pagebreak -->
 
@@ -89,7 +89,7 @@ La diferencia muestra que la planificación condiciona fuertemente la evaluació
 | Exceso de tiempo | 163 |
 | Sin tiempo asignado | 16 |
 
-La banda de 1,2 minutos es una hipótesis compatible con cuatro campos redondeados a centésimas de hora; no certifica la corrección del dato. La exploración también utiliza una tolerancia más amplia de seis minutos: con ella, 1.030 registros presentan discrepancias. Son dos criterios distintos y no se deben confundir sus recuentos.
+La banda de 1,2 minutos es una hipótesis compatible con cuatro campos redondeados a centésimas de hora; no certifica la corrección del dato. Se mantiene como valor predeterminado del procesamiento, pero se ha retirado su control de la barra lateral y no hay un filtro de balance en el mapa. El diagnóstico PDF conserva el balance y los registros diarios de la operación. La exploración también utiliza una tolerancia más amplia de seis minutos: con ella, 1.030 registros presentan discrepancias. Son dos criterios distintos y no se deben confundir sus recuentos.
 
 Los 16 registros sin tiempo asignado corresponden a `ST_0030`. Debemos confirmar si esa operación estaba fuera de servicio o si falta información. Los déficits y excesos se conservan y se cuentan diariamente para evitar que se compensen al agregar. No atribuimos el tiempo que falta a microparadas sin evidencia adicional.
 
@@ -110,21 +110,81 @@ Los 16 registros sin tiempo asignado corresponden a `ST_0030`. Debemos confirmar
 | Ciclo de funcionamiento | 6.000 × TBF / NPR: centésimas de minuto por pieza. |
 | Recurrencia | Semanas evaluables en las que se repiten señales propias, DES o SAT. |
 
-Usamos como referencias iniciales una disponibilidad del 90 %, un ciclo de 80 cmin/pieza y un umbral de pérdidas del 10 % sobre TR. Son parámetros configurables. El reparto sobre TR utiliza tiempo registrado; no supone que todas las jornadas tuvieran exactamente 22 horas planificadas.
+**Objetivo de funcionamiento y clasificación.** El control principal de Streamlit es el objetivo de **funcionamiento sobre TR**, inicialmente del 90 %. No es la disponibilidad propia: `TBF/TR` incluye TAP, DES y SAT en el denominador, mientras que `TBF/(TBF + TAP)` excluye las esperas inducidas. El reparto sobre TR utiliza tiempo registrado; no supone que todas las jornadas tuvieran exactamente 22 horas planificadas.
+
+El objetivo y el ciclo de referencia de 80 cmin/pieza son configurables. El umbral de significación de los mapas de recurrencia se calcula como `100 − objetivo de funcionamiento`, por lo que vale el 10 % con el objetivo inicial. El color de cada máquina depende del funcionamiento/TR y de la pérdida predominante, sin exigir otro umbral individual a TAP, DES o SAT. La clasificación se aplica en este orden:
+
+1. Se revisan primero cobertura, coherencia y ausencia de datos o producción. Estos casos se agrupan como **Otros**, sin asignarles automáticamente una avería.
+2. Para activar una señal TAP, DES o SAT se exige que `TBF/TR` sea **estrictamente inferior al objetivo**. Exactamente al 90 % no se activa ninguna señal de parada con el objetivo inicial.
+3. Entre las operaciones bajo el objetivo se compara el tiempo perdido en TAP, DES y SAT. Si TAP es el mayor, incluido un empate, se asigna Parada propia y rojo. La disponibilidad propia se mantiene como indicador, pero no decide el color.
+4. Si TAP no es el mayor, predomina DES en amarillo o SAT en naranja. Si la mayor de estas dos pérdidas es menor que 1,5 veces la otra, se consideran próximas y se muestran ambos colores, conservando el estado interno **Mixto** exclusivamente para la combinación DES/SAT.
+5. Con funcionamiento/TR igual o superior al objetivo se presenta **Funcionamiento aceptable en verde**: Buen funcionamiento si el ciclo no supera el objetivo y Elemento lento si lo supera. La distinción de ciclo se consulta al desplegar Funcionamiento aceptable y no añade colores a la leyenda. Mixto tampoco tiene una entrada separada en la leyenda.
+
+Con las 16 jornadas del escenario provisional, la clasificación del periodo es:
+
+| Categoría | Operaciones |
+| --- | ---: |
+| Parada propia | 7 |
+| Saturación | 11 |
+| Desabastecimiento | 28 |
+| Mixto | 10 |
+| Buen funcionamiento | 22 |
+| Elemento lento | 6 |
+| Revisar datos | 5 |
+| Sin producción | 2 |
+| Sin datos | 0 |
+| **Total** | **91** |
+
+El resumen de líneas cuenta **56 máquinas con señales de parada**, una vez por operación, coincidiendo ahora con las operaciones elegibles bajo el objetivo. No suma las seis lentas ni los siete casos de datos o planificación como fallos. Las señales inducidas tampoco prueban una avería de la máquina que espera.
+
+La gráfica de funcionamiento/TR contiene **56 operaciones elegibles bajo el 90 %**, con valores entre el 16,20 % y el 89,82 %. El filtro y las barras utilizan ahora el mismo indicador. La versión anterior seleccionaba por TBF/TR y dibujaba disponibilidad propia, lo que explicaba que solo unas pocas barras pareciesen estar bajo el objetivo: hay cinco operaciones elegibles con disponibilidad propia inferior al 90 %. La gráfica aparece una sola vez, en **Máquinas más problemáticas**.
 
 **Frecuencia y duración de las interrupciones.** Contrastamos FPM con la duración media para distinguir muchas interrupciones breves de paradas prolongadas. En el módulo operativo, la señal de interrupciones frecuentes y breves combina una media inferior a dos minutos con FPM igual o superior al percentil 75 de la línea y contadores consistentes. En el escenario provisional aparecen 20 operaciones con esa señal agregada.
 
+La nube de Streamlit representa **79 puntos para 91 operaciones**: un único agregado por operación y periodo, con producción y funcionamiento positivos, cobertura completa y duración media consistente. Los días y las semanas no se añaden como puntos independientes. El código comprueba la unicidad de línea y operación antes de dibujar. Los 20 puntos con indicios se listan de menor a mayor duración media; el tamaño de las burbujas representa horas de TAP.
+
+Debajo de la nube se genera un texto a partir de los datos de la línea, con número de operaciones, TAP acumulado y hasta tres candidatas por grupo, priorizadas por TAP. La plantilla utiliza cuatro casuísticas:
+
+| Casuística | Criterio sobre los puntos fiables | Línea de actuación |
+| --- | --- | --- |
+| Muchas paradas cortas | FPM ≥ P75 y media < 2 min | Contrastar eventos, sensores, alimentación y atascos repetidos. Priorizar el TAP acumulado. |
+| Muchas paradas largas | FPM ≥ P75 y media ≥ 2 min | Revisar incidencias repetidas y tiempos de recuperación. |
+| Pocas paradas cortas | FPM < P75 y media < 2 min | Mantener seguimiento y estandarizar ajustes; vigilar aumentos de frecuencia o TAP. |
+| Pocas paradas largas | FPM < P75 y media ≥ 2 min | Revisar las incidencias de mayor duración y el procedimiento de recuperación. |
+
+Las fronteras cambian con los umbrales configurados; «muchas» se refiere a paradas por pieza respecto al P75, no al número absoluto de eventos. «Largas» en esta plantilla significa superiores al umbral breve; no equivale a alcanzar el umbral de parada prolongada, inicialmente de 15 minutos. En estos datos ninguna media fiable alcanza 15 minutos, lo que no excluye eventos largos aislados.
+
+`ST2235` acumula el mayor TAP entre las operaciones con indicios: 236,95 horas, unas 9.246 paradas por cada 1.000 piezas y una media de 0,040 minutos por parada. Estos valores justifican revisar sus registros y condiciones de funcionamiento. No confirman por sí solos un fallo de sensor, un atasco ni que sea el origen de pérdidas en otras operaciones.
+
 El notebook también explora un umbral de un minuto. Son hipótesis de exploración distintas; los resultados deben acompañarse siempre del umbral empleado. Una media breve puede mezclar paradas cortas y largas, por lo que no confirma eventos individuales de microparada. Una incoherencia entre NAP y TAP impide usar esa media para clasificar con fiabilidad.
 
-**Paradas totales y ciclo elevado.** Las operaciones sin producción se revisan por separado, para que no desaparezcan al exigir producción positiva en los indicadores. Las operaciones con ciclo elevado se contrastan con su producción, balance horario y posible funcionamiento en paralelo antes de interpretarlas como cuellos de botella.
+**Paradas totales y ciclo elevado.** Las operaciones sin producción se revisan por separado, para que no desaparezcan al exigir producción positiva en los indicadores. `PM2130` tiene TBF y producción iguales a cero, con **351,87 horas de TAP** en las 16 jornadas incluidas. Permanece en **Sin producción**, dentro de Otros, y se destaca al principio del mapa como parada total propia registrada. Debemos confirmar si debía trabajar antes de concluir que estuvo averiada durante todo ese tiempo. `ST_0030` también está en Sin producción, pero sus tiempos registrados son cero; no se presenta como una parada propia con TAP positivo. Si una operación registra piezas con TBF cero, pasa a Revisar datos.
 
-**Relaciones entre operaciones.** Comparamos señales propias con DES y SAT de otras operaciones. Cuando hay suficientes días con y sin señal, contrastamos ambos grupos y exploramos asociaciones. El orden configurado sirve para presentar operaciones; no demuestra conexiones físicas ni propagación. Sin eventos temporales y topología validada, las coincidencias generan hipótesis de investigación.
+Las operaciones con ciclo elevado y funcionamiento/TR aceptable se presentan como **Elemento lento** dentro de Funcionamiento aceptable y conservan el verde. Se contrastan con su producción, balance horario y posible funcionamiento en paralelo antes de interpretarlas como cuellos de botella.
+
+**Relaciones entre operaciones.** La ficha de la operación compara señales propias con DES y SAT de otras operaciones en los mismos días. El desplegable permite filtrar desabastecimiento en otras operaciones, saturación en otras operaciones o posibles fuentes de espera de la seleccionada. No muestra la columna de distancia ni el sufijo «conexión por confirmar»; mantiene la explicación de que son coincidencias diarias sin causalidad demostrada. El selector para cargar conexiones se ha retirado de Streamlit. El orden configurado sirve para presentar operaciones y no se utiliza para inventar conexiones físicas. Las comparaciones exploratorias con días de control siguen disponibles en los módulos de análisis e informes, pero no constituyen una pestaña de pérdidas propias en la interfaz actual.
+
+**Organización de la aplicación.** El mapa conserva cajas con el nombre de cada operación y permite ordenar por configuración o **Por urgencia de reparación**. Esta última opción ordena de **menor a mayor porcentaje TBF/TR**, sin agrupar previamente por categoría o color, igual que la opción por TBF de la gráfica de tiempos. Los empates se resuelven por orden configurado y nombre; los porcentajes no definidos quedan al final. El filtro de Otros permite desplegar Sin producción, Revisar datos y Sin datos, y Funcionamiento aceptable permite distinguir Buen funcionamiento y Elemento lento. Se ha retirado el selector intermedio de disponibilidad de datos.
+
+El detalle de la operación seleccionada aparece inmediatamente después del botón de descarga de criterios de clasificación y colores. Los posibles efectos se muestran antes del botón de diagnóstico PDF. Los registros diarios, su balance y la explicación del color se consultan en ese PDF; no ocupan secciones adicionales de la ficha de Streamlit. También se ha retirado el mensaje que pedía seleccionar una operación y la descarga de indicadores de línea mostrados en la versión anterior.
+
+**Revisión de datos**, con el desplegable Otros, aparece al final del mapa de operaciones, después de la ficha seleccionada y antes de Análisis de la línea.
+
+El análisis de línea queda dividido en tres apartados:
+
+| Apartado | Contenido actual |
+| --- | --- |
+| Microparadas | Nube con un punto por operación, recuentos explícitos, plantilla de acciones adaptada a la línea y lista de indicios por duración media creciente. |
+| Máquinas más problemáticas | Única gráfica de máquinas bajo el objetivo TBF/TR y mapas semanales de recurrencia, sin el apartado de patrones y línea de actuación. |
+| Tiempos todas las máquinas | Reparto porcentual de TBF, TAP, DES y SAT por operación, ordenable por configuración o por porcentaje TBF/TR de menor a mayor, coincidiendo con las barras. |
+
+Los mapas de recurrencia solo incluyen operaciones que alcancen el umbral de porcentaje significativo del tipo de pérdida en al menos una semana comparable bajo el objetivo de funcionamiento. Se han retirado la tabla posterior, el reparto diario de horas-máquina y los gráficos adicionales de frecuencia, ciclo y media de las prioritarias. La plantilla de cuatro casuísticas se conserva únicamente en Microparadas. Calendario y calidad y Pérdidas propias ya no son pestañas de Streamlit; la preparación, los escenarios, el calendario opcional y la trazabilidad se conservan en el procesamiento.
 
 <!-- pagebreak -->
 
 ### 6. Qué aporta el trabajo y cómo continuar
 
-El resultado es una base preparada y trazable, con indicadores por operación y periodo, señales de calidad, comparación de escenarios y vistas que distinguen pérdidas propias de esperas externas. La aplicación, los CSV y los informes permiten revisar una prioridad y consultar los datos que la explican.
+El resultado es una base preparada y trazable, con indicadores por operación y periodo, señales de calidad, comparación de escenarios y vistas que distinguen pérdidas propias de esperas externas. La aplicación y los informes permiten revisar una prioridad y consultar los datos que la explican. La interfaz distingue explícitamente las señales de parada, las operaciones bajo el objetivo de funcionamiento y los casos de calidad o planificación; no presenta todos esos recuentos como averías.
 
 Los principales aprendizajes son:
 
@@ -149,12 +209,8 @@ Con cuatro semanas de datos diarios no podemos confirmar causalidad, identificar
 
 ### 8. Documentación y reproducibilidad
 
-| Elemento del proyecto | Función en el trabajo |
-| --- | --- |
-| initial_exploration.ipynb | Exploración, hipótesis y comprobaciones detalladas. |
-| cleaning.py | Preparación, trazabilidad, señales de calidad y escenarios de calendario. |
-| analysis.py y diagnostics.py | Indicadores, clasificación y comprobaciones operativas. |
-| app.py | Consulta visual y revisión de operaciones y periodos. |
-| run_analysis.py y reports.py | Generación de tablas, gráficos e informes. |
+Las fuentes de metodología son `initial_exploration.ipynb`, `cleaning.py`, `analysis.py` y `diagnostics.py`. La consulta visual se realiza mediante `app.py`; las tablas, gráficos e informes se generan con `run_analysis.py` y `reports.py`.
 
-El procedimiento cuenta con pruebas automatizadas para reglas como duplicados, claves conflictivas, cierres, paradas totales, unidades, balances y cálculo de ratios. Este informe se ha elaborado revisando el código y recalculando los recuentos sobre los CSV actuales; no incorpora validación de causas por parte de planta.
+La versión descrita ha superado **55 pruebas automatizadas**, incluidas reglas de duplicados, claves conflictivas, cierres, paradas totales, unidades, balances, cálculo de ratios, orden de categorías, filtros y navegación. Las comprobaciones específicas verifican la pérdida predominante, la combinación exclusiva DES/SAT, la leyenda verde unificada, la ordenación por porcentaje TBF/TR, que la nube tenga un único punto por operación, que los cuatro grupos de la plantilla no se solapen y que los mapas semanales excluyan operaciones sin porcentajes significativos.
+
+Además se ha recorrido Streamlit con los CSV actuales para comprobar las 91 cajas del mapa, los 79 puntos de la nube, las 56 barras bajo el objetivo, la ausencia de duplicación de esa gráfica, la ordenación por TBF y el diagnóstico de `PM2130`. Este informe no incorpora validación de causas por parte de planta.

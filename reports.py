@@ -140,17 +140,14 @@ def _scope(records, days, scenario):
 
 
 def _legend(settings):
-    u = settings.loss_threshold_pct
     rows = [
         ("Sin datos", "Ningún registro utilizable en el periodo; no se sustituye por ceros."),
         ("Revisar datos", "Cobertura inferior al 100%, producción sin TBF o funcionamiento sin piezas en el agregado."),
         ("Sin producción", "NPR=0 y TBF=0. Confirmar si debía trabajar o sufrió una parada total."),
-        ("Mixto", f"TBF/TR < {settings.availability_target:g}% y dos o más señales: propia + DES/SAT, o DES + SAT."),
-        ("Parada propia", f"TBF/TR y disponibilidad propia < {settings.availability_target:g}%, sin señal inducida."),
-        ("Desabastecimiento", f"TBF/TR < {settings.availability_target:g}%. Señal DES sin otras señales; DES/TR >= {u:g}% o predominio inducido."),
-        ("Saturación", f"TBF/TR < {settings.availability_target:g}%. Señal SAT sin otras señales; SAT/TR >= {u:g}% o predominio inducido."),
-        ("Buen funcionamiento", f"Sin señales de parada y ciclo <= {settings.cycle_target_cmin:g} cmin/pieza. Azul; grupo Funcionamiento aceptable."),
-        ("Elemento lento", f"Sin señales de parada y ciclo > {settings.cycle_target_cmin:g} cmin/pieza. Azul grisáceo; grupo Funcionamiento aceptable."),
+        ("Parada propia", f"TBF/TR < {settings.availability_target:g}% y TAP es la pérdida mayor. TAP tiene prioridad en empates. Rojo."),
+        ("Desabastecimiento", f"TBF/TR < {settings.availability_target:g}% y DES predomina entre las pérdidas. Amarillo."),
+        ("Saturación", f"TBF/TR < {settings.availability_target:g}% y SAT predomina entre las pérdidas. Naranja."),
+        ("Funcionamiento aceptable", f"TBF/TR >= {settings.availability_target:g}%. Verde."),
     ]
     return [(name, description) for name, description in rows if name in STATUS_COLORS]
 
@@ -190,9 +187,10 @@ def classification_report(settings, line, weeks, scenario):
         heading("Umbrales y precedencia"),
         p(f"Condición previa para TAP, DES y SAT: TBF/TR < {settings.availability_target:g}%. "
           "Si el funcionamiento alcanza el objetivo no se activan señales de parada. Después se aplica la división por tipo de pérdida."),
-        p(f"Disponibilidad propia: 100 × TBF / (TBF + TAP); señal propia si es inferior a {settings.availability_target:g}%. "
-          f"DES o SAT: señal desde {settings.loss_threshold_pct:g}% de TR. Si solo su suma alcanza el umbral, "
-          "se aplica predominio 1,5; sin predominio se activan ambas señales. Dos o más señales producen Mixto."),
+        p("Por debajo del objetivo, el color corresponde al mayor tiempo entre TAP, DES y SAT. "
+          "TAP gana los empates. Si TAP no es el mayor y DES/SAT difieren por un factor inferior a 1,5, "
+          "se muestran naranja y amarillo a la vez; en otro caso, el mayor de DES y SAT. "
+          "La disponibilidad propia, 100 × TBF / (TBF + TAP), se conserva como indicador y no decide el color."),
         p(f"TR = TBF + TAP + DES + SAT. Ciclo = 6000 × TBF (h) / NPR. Dentro de Funcionamiento aceptable, "
           f"el ciclo divide buen funcionamiento y elementos lentos con objetivo {settings.cycle_target_cmin:g} cmin/pieza. "
           "Los problemas de cobertura y coherencia tienen prioridad sobre la clasificación operativa."),
@@ -201,6 +199,8 @@ def classification_report(settings, line, weeks, scenario):
         p("Mixto se representa mitad naranja y mitad amarillo. Los filtros por categoría "
           "solo cambian las máquinas visibles. Las cajas muestran únicamente el nombre de la máquina. "
           "Los colores resumen el periodo; las coincidencias diarias no prueban causalidad y un elemento lento no confirma una avería."),
+        p("Por urgencia de reparación ordena el mapa de menor a mayor porcentaje TBF/TR, sin agrupar primero por color. "
+          "Los empates se resuelven por orden configurado y nombre; los porcentajes no definidos se sitúan al final."),
     ], "LOSSIA · Criterios de clasificación y colores")
 
 
@@ -287,19 +287,19 @@ def technical_report(prepared, records, days, result, settings, scenario, *, con
     ]
     story += [table(["Variable", "Fórmula", "Interpretación"], formulas, [115, 180, WIDTH - 295]),
               p("Se suman tiempos y contadores antes de dividir. Ejemplo: 2 horas con 4 paradas y 1 hora con 1 parada dan (3 × 60)/5 = 36 minutos, no la media simple de 30 y 60 (=45). Un denominador cero deja el indicador sin definir."),
-              p(f"Parámetros actuales: disponibilidad >= {settings.availability_target:g}%; ciclo <= {settings.cycle_target_cmin:g} cmin/pieza. Disponibilidad propia y TBF/TR no son equivalentes. No se suma NPR de todas las estaciones como producción final, porque las mismas piezas pueden contarse varias veces."),
+              p(f"Parámetros actuales: funcionamiento/TR >= {settings.availability_target:g}%; ciclo <= {settings.cycle_target_cmin:g} cmin/pieza. Disponibilidad propia y TBF/TR no son equivalentes. No se suma NPR de todas las estaciones como producción final, porque las mismas piezas pueden contarse varias veces."),
               PageBreak(), heading("4 · El criterio unificado y la leyenda")]
     story += [p("Se aplica la misma función de clasificación a cualquier línea y periodo con este esquema. Primero se comprueba si el dato permite interpretar el estado; después se evalúan las señales propias e inducidas; finalmente, el ciclo. No se decide por el TAP absoluto más alto ni por el nombre de la máquina."),
               legend_table(settings),
               p(f"Condición previa de cualquier señal: TBF/TR < {settings.availability_target:g}%. "
-                f"Después, señal propia: disponibilidad < {settings.availability_target:g}%. "
-                f"Señal DES y SAT: la componente alcanza {settings.loss_threshold_pct:g}%. Si ninguna lo alcanza por separado pero su suma sí, se asigna DES cuando DES >= 1,5 × SAT, SAT cuando SAT >= 1,5 × DES, y ambas si no hay predominio. "
+                "Después se elige el mayor tiempo de pérdida entre TAP, DES y SAT. TAP gana los empates. "
+                "Si TAP no es el mayor y DES/SAT difieren por un factor inferior a 1,5, se muestran ambos colores. "
                 "Las mismas señales alimentan filtros y recurrencia: un color inducido no queda fuera de su seguimiento por usar otra regla."),
               p("La media no modifica por sí sola el color principal. Señal de paradas frecuentes y breves: FPM >= P75 de operaciones comparables de la misma línea y media inferior al umbral breve. "
                 f"Umbrales actuales: breve < {settings.short_stop_minutes:g} min; prolongada >= {settings.long_stop_minutes:g} min; P25 distingue pocas y prolongadas. Son hipótesis ajustables, no diagnósticos de sensores ni inventario de eventos."),
               PageBreak(), heading("5 · Mapa de operaciones: lectura y navegación"),
               p("La vista de línea comienza por el mapa. Cada caja contiene exclusivamente el nombre y el color. Se recorre en una fila horizontal desplazable o se abre la cuadrícula completa. Al pulsar una caja, se muestra su evidencia debajo y se permite descargar el diagnóstico PDF."),
-              p("Orden de línea: Orden_OP y nombre para desempatar, sin inferir conexiones. Orden de urgencia: parada propia, saturación, desabastecimiento, mixto, funcionamiento aceptable y, por separado, revisión de datos. Dentro de cada categoría se consideran porcentaje de pérdida, recurrencia y horas TAP. Es una cola de investigación, no una estimación causal de producción perdida."),
+              p("Orden de línea: Orden_OP y nombre para desempatar, sin inferir conexiones. Por urgencia de reparación: porcentaje TBF/TR de menor a mayor, sin prioridad previa por categoría o color. Los empates se resuelven por Orden_OP y nombre; los porcentajes no definidos quedan al final. Es una cola de investigación, no una estimación causal de producción perdida."),
               p("El filtro por categoría permite desplegar Otros: Sin producción, Revisar datos y Sin datos. Funcionamiento aceptable reúne Buen funcionamiento y Elemento lento, con colores distintos y un filtro adicional entre ambos. Las paradas totales con TBF cero y TAP positivo se destacan al principio. Los filtros no cambian el color. La leyenda permanece fuera de las cajas.")]
     for line, operations in result.operations.groupby("Linea"):
         operations = order_operations(operations)

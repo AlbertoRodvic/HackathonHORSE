@@ -7,7 +7,7 @@ import unittest
 import pandas as pd
 from streamlit.testing.v1 import AppTest
 
-from analysis import (Settings, STATUS_COLORS, analyse, map_categories, order_operations, propagation_evidence,
+from analysis import (Settings, STATUS_COLORS, analyse, map_categories, order_operations, order_time_operations, signal_conditions, propagation_evidence,
                       validate_connections)
 from cleaning import ROW_KEYS, VALUES, prepare_data, select_scenario
 from reports import operation_report, technical_report, classification_report, text_color
@@ -34,14 +34,42 @@ class CriteriaAndReportTests(unittest.TestCase):
     def setUp(self):
         self.source, self.config, self.prepared, self.records, self.days, self.settings, self.result = fixture()
 
-    def test_urgency_category_order(self):
+    def test_color_is_largest_loss_and_mixed_only_means_close_des_sat(self):
+        frame = pd.DataFrame({"TBF_pct": [90, 80, 80, 80, 80, 80, 80],
+                              "TAP": [10, 12, 1, 1, 1, 0, 8],
+                              "DES": [0, 5, 12, 6, 8, 12, 8],
+                              "SAT": [0, 3, 7, 13, 11, 8, 4]})
+        own, des, sat = signal_conditions(frame, Settings())
+        self.assertEqual(list(zip(own, des, sat)), [
+            (False, False, False), (True, False, False), (False, True, False),
+            (False, False, True), (False, True, True), (False, True, False), (True, False, False)])
+
+    def test_runtime_order_matches_percentage_bars_not_absolute_hours(self):
+        ops = self.result.operations.iloc[:2].copy()
+        ops["Operacion"] = ["A", "B"]
+        ops["TBF"] = [8, 70]
+        ops["TR"] = [10, 100]
+        ops["TBF_pct"] = [80, 70]
+        self.assertEqual(order_time_operations(ops, by_runtime=True).Operacion.tolist(), ["B", "A"])
+
+    def test_legend_groups_all_acceptable_operations_in_green(self):
+        from reports import _legend
+        names = [name for name, _ in _legend(Settings())]
+        self.assertNotIn("Mixto", names)
+        self.assertNotIn("Elemento lento", names)
+        self.assertIn("Funcionamiento aceptable", names)
+        self.assertEqual(STATUS_COLORS["Elemento lento"], STATUS_COLORS["Funcionamiento aceptable"])
+        self.assertEqual(STATUS_COLORS["Buen funcionamiento"], STATUS_COLORS["Funcionamiento aceptable"])
+
+    def test_urgency_uses_runtime_percentage_across_categories_and_keeps_missing_last(self):
         statuses = ["Parada propia", "Saturación", "Desabastecimiento", "Mixto", "Buen funcionamiento", "Elemento lento", "Sin datos"]
         operations = pd.concat([self.result.operations.iloc[[0]]] * len(statuses), ignore_index=True)
         operations["status"] = statuses
         operations["Operacion"] = [f"OP{index}" for index in range(len(statuses))]
         operations["Orden_OP"] = list(range(len(statuses)))
+        operations["TBF_pct"] = [70, 60, 80, 50, 95, 90, float("nan")]
         ordered = order_operations(operations.iloc[::-1], urgent=True)
-        self.assertEqual(ordered.status.tolist(), statuses)
+        self.assertEqual(ordered.Operacion.tolist(), ["OP3", "OP1", "OP0", "OP2", "OP5", "OP4", "OP6"])
 
     def test_runtime_threshold_gates_all_stop_types_and_weekly_signals(self):
         cases = [(90, 10, 0, 0, "Buen funcionamiento"),
@@ -50,7 +78,7 @@ class CriteriaAndReportTests(unittest.TestCase):
                  (89, 11, 0, 0, "Parada propia"),
                  (89, 0, 11, 0, "Desabastecimiento"),
                  (89, 0, 0, 11, "Saturación"),
-                 (80, 10, 10, 0, "Mixto")]
+                 (80, 10, 10, 0, "Parada propia")]
         for tbf, tap, des, sat, expected in cases:
             with self.subTest(times=(tbf, tap, des, sat)):
                 source = self.source.copy()
@@ -88,7 +116,7 @@ class CriteriaAndReportTests(unittest.TestCase):
 
     def test_gray_reasons_share_one_map_category(self):
         operations = pd.DataFrame({"status": ["Sin producción", "Revisar datos", "Sin datos", "Buen funcionamiento"]})
-        self.assertEqual(map_categories(operations).tolist(), ["Otros", "Otros", "Otros", "Buen funcionamiento"])
+        self.assertEqual(map_categories(operations).tolist(), ["Otros", "Otros", "Otros", "Funcionamiento aceptable"])
 
     def test_classification_pdf_uses_scope_and_current_thresholds(self):
         from unittest.mock import patch
@@ -119,7 +147,7 @@ class CriteriaAndReportTests(unittest.TestCase):
 
     def test_both_large_induced_signals_are_mixed(self):
         source = self.source.copy()
-        source.loc[source.Linea.eq("L2"), ["TBF", "TAP", "DES", "SAT", "NAP"]] = [12, 0, 6, 4, 0]
+        source.loc[source.Linea.eq("L2"), ["TBF", "TAP", "DES", "SAT", "NAP"]] = [12, 0, 5, 4, 0]
         p = prepare_data(source, self.config)
         r, d = select_scenario(p)
         row = analyse(r, d, self.config).operations.loc[lambda f: f.Linea.eq("L2")].iloc[0]
@@ -303,7 +331,7 @@ class MapInterfaceTests(unittest.TestCase):
         app.selectbox(key="map_no_alerts").set_value("Buen funcionamiento").run()
         self.assertFalse([b for b in app.button if b.key and b.key.startswith("operation_")])
         next(n for n in app.number_input if n.label == "Objetivo de funcionamiento / TR (%)").set_value(99.0).run()
-        app.selectbox(key="map_signal").set_value("Mixto").run()
+        app.selectbox(key="map_signal").set_value("Parada propia").run()
         self.assertFalse(app.exception)
         self.assertEqual([b.label for b in app.button if b.key and b.key.startswith("operation_")], ["A"])
 
@@ -362,6 +390,10 @@ class MapInterfaceTests(unittest.TestCase):
             self.assertFalse(app.exception)
             app.radio(key="line_analysis").set_value("Máquinas más problemáticas").run()
             self.assertIn("Revisión de datos", [s.value for s in app.header])
+            headers = [s.value for s in app.header]
+            self.assertLess(headers.index("Revisión de datos"), headers.index("Análisis de la línea"))
+            self.assertEqual(headers.count("Revisión de datos"), 1)
+            self.assertNotIn("Patrón de paradas y línea de actuación", [s.value for s in app.subheader])
             self.assertEqual(app.header[0].value, "Mapa de operaciones")
             labels = [e.label for e in app.expander]
             for label in ["Sin producción · 1 máquinas", "Revisar datos · 1 máquinas", "Sin datos · 1 máquinas"]:

@@ -9,8 +9,8 @@ from cleaning import BALANCE_COUNT_COLUMNS, DAY_KEYS, FLAGS, OP_KEYS, TIMES, VAL
 
 STATUS_COLORS = {
     "Parada propia": "#d94a4a", "Desabastecimiento": "#f2cf52", "Saturación": "#f08a35",
-    "Mixto": "#f08a35", "Funcionamiento aceptable": "#339d78", "Buen funcionamiento": "#428bca",
-    "Elemento lento": "#536579", "Otros": "#98a4b5", "Sin producción": "#98a4b5",
+    "Mixto": "#f08a35", "Funcionamiento aceptable": "#339d78", "Buen funcionamiento": "#339d78",
+    "Elemento lento": "#339d78", "Otros": "#98a4b5", "Sin producción": "#98a4b5",
     "Revisar datos": "#667085", "Sin datos": "#b8c0cc",
 }
 MIXED_BACKGROUND = "linear-gradient(90deg, #f08a35 0 50%, #f2cf52 50% 100%)"
@@ -21,7 +21,9 @@ OTHER_STATUSES = ("Sin producción", "Revisar datos", "Sin datos")
 
 def map_categories(operations):
     """Conserva el motivo de calidad en status y lo agrupa solo para el mapa."""
-    return operations.status.replace(dict.fromkeys(OTHER_STATUSES, "Otros"))
+    return operations.status.replace({**dict.fromkeys(OTHER_STATUSES, "Otros"),
+                                      "Buen funcionamiento": "Funcionamiento aceptable",
+                                      "Elemento lento": "Funcionamiento aceptable"})
 
 
 @dataclass(frozen=True)
@@ -91,19 +93,14 @@ def aggregate(records, days, configuration, settings, weekly=False):
 
 def signal_conditions(frame, settings):
     """Una definición común para colores, filtros, informes y recurrencia."""
-    own = frame.availability_pct.lt(settings.availability_target)
-    des = frame.DES_pct.ge(settings.loss_threshold_pct)
-    sat = frame.SAT_pct.ge(settings.loss_threshold_pct)
-    # Si el conjunto inducido supera el umbral pero ninguna componente lo hace,
-    # usar predominio 1,5; si están equilibradas conservar ambas señales.
-    combined = frame.induced_pct.ge(settings.loss_threshold_pct) & ~des & ~sat
-    dominant_des = frame.DES.ge(1.5 * frame.SAT)
-    dominant_sat = frame.SAT.ge(1.5 * frame.DES)
-    balanced = combined & ~dominant_des & ~dominant_sat
-    des = des | (combined & dominant_des) | balanced
-    sat = sat | (combined & dominant_sat) | balanced
     below_target = frame.TBF_pct.lt(settings.availability_target)
-    return own & below_target, des & below_target, sat & below_target
+    # TAP tiene prioridad si es la pérdida mayor, incluso en un empate.
+    own = below_target & frame.TAP.gt(0) & frame.TAP.ge(frame.DES) & frame.TAP.ge(frame.SAT)
+    induced = below_target & ~own
+    close = frame.DES.gt(0) & frame.SAT.gt(0) & frame.DES.lt(1.5 * frame.SAT) & frame.SAT.lt(1.5 * frame.DES)
+    des = induced & frame.DES.gt(0) & (frame.DES.ge(frame.SAT) | close)
+    sat = induced & frame.SAT.gt(0) & (frame.SAT.ge(frame.DES) | close)
+    return own, des, sat
 
 
 def classify(operations, settings):
@@ -149,11 +146,16 @@ def order_operations(operations, urgent=False):
     result["loss_severity_pct"] = result[["TAP_pct", "DES_pct", "SAT_pct"]].max(axis=1)
     result["recurrence_total"] = result[["recurrence_own", "recurrence_des", "recurrence_sat"]].sum(axis=1)
     if urgent:
-        result["category_order"] = result.status.map({"Parada propia": 0, "Saturación": 1,
-            "Desabastecimiento": 2, "Mixto": 3, "Buen funcionamiento": 4, "Elemento lento": 4}).fillna(5)
-        return result.sort_values(["category_order", "loss_severity_pct", "recurrence_total", "TAP", "Orden_OP", "Operacion"],
-                                  ascending=[True, False, False, False, True, True], na_position="last")
+        return result.sort_values(["TBF_pct", "Orden_OP", "Operacion"], kind="stable", na_position="last")
     return result.sort_values(["Orden_OP", "Operacion"], kind="stable")
+
+
+def order_time_operations(operations, by_runtime=False):
+    """Ordena por el porcentaje de TBF que se dibuja, no por horas absolutas."""
+    selected = operations.loc[operations.TR.gt(0)]
+    if by_runtime:
+        return selected.sort_values(["TBF_pct", "Orden_OP", "Operacion"], kind="stable")
+    return order_operations(selected)
 
 
 def state_explanation(row, settings):
@@ -172,13 +174,12 @@ def state_explanation(row, settings):
                f"DES/TR: {row.DES_pct:.2f}%; SAT/TR: {row.SAT_pct:.2f}%."]
     reasons.append(f"Solo se activan señales de parada si TBF/TR < {settings.availability_target:g}%. "
                    "Al alcanzar el objetivo no se asignan señales TAP, DES ni SAT.")
-    reasons.append(f"Señal propia: {'sí' if own.iloc[0] else 'no'}; disponibilidad propia "
-                   f"{row.availability_pct:.2f}% frente al objetivo de {settings.availability_target:g}%.")
-    reasons.append(f"Señal DES: {'sí' if des.iloc[0] else 'no'}; señal SAT: {'sí' if sat.iloc[0] else 'no'}. "
-                   f"Umbral individual {settings.loss_threshold_pct:g}%. Si solo la suma inducida lo supera, "
-                   "se usa predominio 1,5 o ambas señales cuando están equilibradas.")
-    reasons.append("Dos o más señales propias/inducidas producen estado Mixto. Funcionamiento aceptable indica "
-                   "que no se activan señales de parada con los criterios del periodo. "
+    reasons.append(f"Pérdidas registradas: TAP {row.TAP:.2f} h, DES {row.DES:.2f} h y SAT {row.SAT:.2f} h. "
+                   f"Predomina TAP: {'sí' if own.iloc[0] else 'no'}; DES: {'sí' if des.iloc[0] else 'no'}; "
+                   f"SAT: {'sí' if sat.iloc[0] else 'no'}.")
+    reasons.append("Bajo el objetivo se colorea la pérdida mayor. TAP gana los empates. Si TAP no es la mayor "
+                   "y DES/SAT difieren por un factor inferior a 1,5, se muestran ambos colores; en otro caso, el mayor.")
+    reasons.append(f"Funcionamiento aceptable indica TBF/TR ≥ {settings.availability_target:g}% y se muestra en verde. "
                    f"Dentro de Funcionamiento aceptable, ciclo ≤ {settings.cycle_target_cmin:g} cmin/pieza indica buen funcionamiento; "
                    "un ciclo superior indica elementos lentos, sin atribuir una avería.")
     return reasons

@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
 
-from analysis import (Settings, STATUS_COLORS, MIXED_BACKGROUND, TIME_COLORS, analyse, order_operations,
+from analysis import (Settings, STATUS_COLORS, MIXED_BACKGROUND, TIME_COLORS, analyse, order_operations, order_time_operations,
                       OTHER_STATUSES, map_categories, propagation_evidence)
 from cleaning import TIMES, prepare_data, select_scenario
 from reports import operation_report, classification_report, text_color
@@ -231,11 +231,13 @@ def operations_view(operations, records, days, settings, scenario, connections, 
             visible = visible.loc[visible.Zona.eq(zone)]
     present = set(map_categories(visible))
     legend = " · ".join(f'<span style="display:inline-block;width:12px;height:12px;background:{MIXED_BACKGROUND if status == "Mixto" else STATUS_COLORS[status]}"></span> {escape(status)}'
-                        for status in available if status in present)
+                        for status in available if status in present and status != "Mixto")
     st.markdown(legend, unsafe_allow_html=True)
     st.caption(f"Mostrando {len(visible)} de {len(operations)} operaciones. "
                + "Los filtros no cambian los colores. "
                + "El orden no implica conexión física; el color resume el periodo, no el estado instantáneo.")
+    if order_mode == "Por urgencia de reparación":
+        st.caption("Urgencia: de menor a mayor porcentaje de funcionamiento TBF/TR, con valores no definidos al final.")
     expanded = st.session_state.get("map_expanded", False)
     selected = st.session_state.get("selected_operation")
     if selected not in operations.Operacion.tolist():
@@ -295,6 +297,7 @@ def operations_view(operations, records, days, settings, scenario, connections, 
         pdf = operation_report(row, records, days, settings, scenario, connections=connections, source_info=sources)
         filename = "diagnostico_" + sha256(f"{row.Linea}/{selected}".encode()).hexdigest()[:10] + ".pdf"
         st.download_button("Descargar diagnóstico PDF", pdf, file_name=filename, mime="application/pdf", on_click="ignore", type="primary")
+    others_view(operations, settings)
 
 
 def action_plan_view(operations, settings):
@@ -342,14 +345,10 @@ def microstop_view(operations, settings, records):
         st.info("No hay operaciones que combinen frecuencia alta y media breve en esta selección.")
     else:
         table(micro[["Operacion", "mean_stop_minutes", "fpm", "NAP", "TAP"]])
-    with st.expander("Datos y cálculo de la media"):
-        st.write("Media = 60 × suma de TAP / suma de NAP. Se agregan los registros de cada operación antes de dividir.")
-        table(operations[["Operacion", "NAP", "TAP", "fpm", "mean_stop_minutes", "stop_duration_reliable"]])
 
 
 def problematic_view(result, line, operations, settings):
     st.header("Máquinas más problemáticas")
-    others_view(operations, settings)
     below = operations.loc[operations.eligible & operations.TBF_pct.lt(settings.availability_target)]
     st.subheader(f"Máquinas con funcionamiento / TR < {settings.availability_target:g}% · {len(below)}")
     if below.empty:
@@ -358,8 +357,6 @@ def problematic_view(result, line, operations, settings):
         st.caption("Las barras y el filtro usan el mismo indicador: TBF / (TBF + TAP + DES + SAT). "
                    "Estar por debajo del objetivo no demuestra una avería propia.")
         plot(investigation_figure(below, settings, metric="TBF_pct"))
-        st.subheader("Patrón de paradas y línea de actuación")
-        action_plan_view(below, settings)
     st.subheader("Qué pérdidas se repiten")
     weekly = result.weekly.loc[result.weekly.Linea.eq(line)]
     for tab, kind in zip(st.tabs(["Parada propia · TAP", "Saturación · SAT", "Desabastecimiento · DES"]), ["TAP", "SAT", "DES"]):
@@ -403,7 +400,7 @@ def main():
             st.caption("Funcionamiento = TBF / (TBF + TAP + DES + SAT). Solo se activan señales de parada por debajo de este objetivo.")
             cycle = st.number_input("Objetivo de ciclo (cmin/pieza)", 0.1, value=80.0)
             loss = round(100 - availability, 10)
-            st.caption(f"El umbral para distinguir pérdidas se deriva del objetivo: 100 − {availability:g} = {loss:g}% de TR.")
+            st.caption("Bajo el objetivo, el color corresponde a la pérdida mayor entre TAP, DES y SAT.")
             short = st.number_input("Parada breve: media inferior a (min)", 0.1, 10.0, 2.0)
             long = st.number_input("Parada prolongada: media desde (min)", 10.1, value=15.0)
             reference = st.number_input("Referencia de horas por jornada", 0.1, value=22.0)
@@ -474,8 +471,8 @@ def main():
         else:
             st.header(analysis)
             ordering = st.selectbox("Orden de las máquinas", ["Orden de línea", "De menor TBF a mayor TBF"], key="times_order")
-            timed = operations.loc[operations.TR.gt(0)]
-            timed = timed.sort_values(["TBF", "Orden_OP", "Operacion"]) if ordering == "De menor TBF a mayor TBF" else order_operations(timed)
+            st.caption("La ordenación por TBF utiliza el porcentaje TBF/TR representado en las barras.")
+            timed = order_time_operations(operations, by_runtime=ordering == "De menor TBF a mayor TBF")
             time_mix(timed)
 
 
