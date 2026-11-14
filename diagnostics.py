@@ -182,6 +182,37 @@ def microstop_assessment(records, settings):
     return summary.sort_values("tap_on_signal_days_h", ascending=False), detail
 
 
+def investigation_figure(operations, settings):
+    """Dos paneles del apartado 4 para las máquinas recibidas, incluso en revisión."""
+    if operations.empty:
+        return None
+    selected = operations.sort_values(["availability_pct", "Operacion"], ascending=[True, True],
+                                      na_position="last").reset_index(drop=True)
+    fig = Figure(figsize=(14, max(4, len(selected) * .55)))
+    axes = fig.subplots(1, 2, sharey=True, gridspec_kw={"width_ratios": [1, 1.1]})
+    y = np.arange(len(selected))
+    axes[0].barh(y, selected.availability_pct, color=TIME_COLORS["TAP"])
+    axes[0].axvline(settings.availability_target, color="#333333", linestyle="--", label="Objetivo")
+    axes[0].set(xlim=(0, 100), xlabel="Disponibilidad (%)",
+                title=f"{selected.Linea.iloc[0]}: dónde investigar")
+    axes[0].set_yticks(y, selected.Operacion)
+    axes[0].invert_yaxis()
+    axes[0].legend()
+    for index in selected.index[selected.availability_pct.isna()]:
+        axes[0].text(2, index, "Sin disponibilidad definida", va="center", fontsize=9)
+    left = np.zeros(len(selected))
+    for kind in ["TAP", "DES", "SAT"]:
+        values = selected[kind].fillna(0).to_numpy()
+        axes[1].barh(y, values, left=left, color=TIME_COLORS[kind], label=kind)
+        left += values
+    for index in selected.index[selected[["TAP", "DES", "SAT"]].isna().all(axis=1)]:
+        axes[1].text(0, index, "Sin tiempos disponibles", va="center", fontsize=9)
+    axes[1].set(xlabel="Horas-máquina acumuladas", title="Parada propia frente a esperas externas")
+    axes[1].legend()
+    fig.tight_layout()
+    return fig
+
+
 def priority_figure(operations, settings, limit=10):
     """Extiende el último gráfico del apartado 4: mismas operaciones en cinco paneles."""
     selected = priorities(operations).head(limit).iloc[::-1]

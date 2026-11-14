@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from cleaning import DAY_KEYS, FLAGS, OP_KEYS, TIMES, VALUES
+from cleaning import BALANCE_COUNT_COLUMNS, DAY_KEYS, FLAGS, OP_KEYS, TIMES, VALUES, balance_counts
 
 STATUS_COLORS = {
     "Desabastecimiento": "#20b8d8", "Saturación": "#a060d0",
@@ -80,6 +80,9 @@ def aggregate(records, days, configuration, settings, weekly=False):
     grid = configuration.merge(expected, on="Linea", how="inner", validate="many_to_many")
     grid = grid.merge(sums, on=keys, how="left", validate="one_to_one")
     grid = grid.merge(counts, on=keys, how="left", validate="one_to_one")
+    grid = grid.merge(balance_counts(records, keys), on=keys, how="left", validate="one_to_one")
+    grid[list(BALANCE_COUNT_COLUMNS)] = grid[list(BALANCE_COUNT_COLUMNS)].fillna(0).astype(int)
+    grid["balance_review_days"] = grid[["balance_deficit_days", "balance_excess_days", "balance_zero_days"]].sum(axis=1)
     grid["observed_days"] = grid.observed_days.fillna(0).astype(int)
     grid[FLAGS + ["time_reference_mismatch"]] = grid[FLAGS + ["time_reference_mismatch"]].fillna(0)
     return metrics(grid, settings)

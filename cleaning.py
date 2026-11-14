@@ -15,6 +15,9 @@ FLAGS = ["production_without_runtime", "runtime_without_production",
 DAY_LABELS = {"planned": "Producción planificada", "closed": "Cierre confirmado",
               "unconfirmed": "Sin actividad: causa por confirmar", "unknown": "Planificación desconocida",
               "calendar_conflict": "Calendario de cierre con actividad registrada: revisar"}
+BALANCE_LABELS = ("Exacto o compatible con redondeo", "Déficit de tiempo",
+                  "Exceso de tiempo", "Sin tiempo asignado")
+BALANCE_COUNT_COLUMNS = ("balance_ok_days", "balance_deficit_days", "balance_excess_days", "balance_zero_days")
 
 
 @dataclass
@@ -76,13 +79,14 @@ def _calendar(source):
 
 
 def prepare_data(source, configuration, *, calendar=None, time_unit="hours",
-                 reference_hours=22.0, tolerance_hours=0.10):
+                 reference_hours=22.0, tolerance_hours=0.10, balance_tolerance_hours=0.02):
     """No elimina paradas reales ni convierte días sin actividad en festivos."""
     factors = {"hours": 1.0, "minutes": 1 / 60, "seconds": 1 / 3600}
     if time_unit not in factors:
         raise ValueError("Unidad de tiempo desconocida.")
     if (not np.isfinite(reference_hours) or reference_hours <= 0
-            or not np.isfinite(tolerance_hours) or tolerance_hours < 0):
+            or not np.isfinite(tolerance_hours) or tolerance_hours < 0
+            or not np.isfinite(balance_tolerance_hours) or balance_tolerance_hours < 0):
         raise ValueError("La referencia horaria debe ser positiva y la tolerancia no negativa.")
     data, config = _headers(source), _headers(configuration)
     _require(data, ROW_KEYS + VALUES, "Producción")
@@ -163,10 +167,25 @@ def prepare_data(source, configuration, *, calendar=None, time_unit="hours",
     # Margen numérico de 1e-9 h (~3,6 microsegundos), no una tolerancia operativa adicional.
     clean["time_reference_mismatch"] = difference.gt(tolerance_hours) & ~np.isclose(
         difference, tolerance_hours, atol=1e-9, rtol=0)
+    clean["balance_delta_hours"] = clean.recorded_hours - clean.reference_hours
+    clean["balance_delta_minutes"] = 60 * clean.balance_delta_hours
+    clean["balance_band_minutes"] = 60 * balance_tolerance_hours
+    within = difference.le(balance_tolerance_hours) | np.isclose(
+        difference, balance_tolerance_hours, atol=1e-9, rtol=0)
+    clean["balance_label"] = np.select(
+        [clean.recorded_hours.eq(0), within, clean.balance_delta_hours.lt(0)],
+        [BALANCE_LABELS[3], BALANCE_LABELS[0], BALANCE_LABELS[1]], default=BALANCE_LABELS[2])
     audit = pd.Series({"Registros originales": len(source), "Copias idénticas retiradas": len(duplicates),
                        "Registros apartados": len(quarantine), "Registros utilizables": len(clean),
                        **{name: int(values.sum()) for name, values in issues.items()}}, name="Cantidad")
     return PreparedData(clean, config, days.sort_values(DAY_KEYS), quarantine, duplicates, audit)
+
+
+def balance_counts(records, keys):
+    """Cuenta etiquetas sin completar huecos, compensar excesos ni quitar filas."""
+    sample = records.assign(**{column: records.balance_label.eq(label)
+                               for label, column in zip(BALANCE_LABELS, BALANCE_COUNT_COLUMNS)})
+    return sample.groupby(keys, as_index=False)[list(BALANCE_COUNT_COLUMNS)].sum()
 
 
 def select_scenario(prepared, scenario="provisional", weeks=None):

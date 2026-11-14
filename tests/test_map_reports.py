@@ -156,6 +156,35 @@ class MapInterfaceTests(unittest.TestCase):
         self.assertTrue(any("Detalle · B" == s.value for s in app.subheader))
         self.assertTrue(any(e.proto.label == "Descargar diagnóstico PDF" for e in app.get("download_button")))
 
+    def test_balance_filter_and_detail_do_not_remove_source_records(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "data").mkdir()
+            source, config, *_ = fixture()
+            source.loc[source.Linea.eq("L1") & source.Operacion.eq("A"), "TBF"] = 9
+            source.loc[source.Linea.eq("L1") & source.Operacion.eq("C"), "SAT"] = 1
+            source.loc[source.Operacion.eq("X"), ["TBF", "TAP", "DES", "SAT", "NAP", "NPR"]] = 0
+            source.to_csv(root / "data" / "datos_hackaton.csv", index=False)
+            config.to_csv(root / "data" / "config_hackaton.csv", index=False)
+            script = Path("app.py").read_text(encoding="utf-8").replace(
+                "ROOT = Path(__file__).resolve().parent", f"ROOT = Path({str(root)!r})")
+            app = AppTest.from_string(script, default_timeout=60).run()
+            app.button(key="line_L1").click().run()
+            self.assertFalse(app.exception)
+            app.selectbox(key="map_balance_filter").set_value("Con balance por revisar").run()
+            buttons = [b for b in app.button if b.key and b.key.startswith("operation_")]
+            self.assertEqual({b.label for b in buttons}, {"A", "C", "X"})
+            next(b for b in buttons if b.label == "A").click().run()
+            self.assertFalse(app.exception)
+            self.assertTrue(any("Balance horario por revisar" in w.value for w in app.warning))
+            self.assertTrue(any("Etiqueta de balance" in frame.value.columns for frame in app.dataframe))
+            app.number_input(key="balance_band_minutes").set_value(61.0).run()
+            self.assertFalse(app.exception)
+            buttons = [b for b in app.button if b.key and b.key.startswith("operation_")]
+            self.assertEqual([b.label for b in buttons], ["X"])
+            # La fuente en disco conserva todos los registros y tiempos originales.
+            pd.testing.assert_frame_equal(pd.read_csv(root / "data" / "datos_hackaton.csv"), source)
+
     def test_filters_sort_and_grid_preserve_selection(self):
         app = self.app()
         app.selectbox(key="map_order").set_value("Urgencia").run()
@@ -170,12 +199,14 @@ class MapInterfaceTests(unittest.TestCase):
         app.multiselect(key="map_filters").set_value([]).run()
         self.assertEqual(len([b for b in app.button if b.key and b.key.startswith("operation_")]), 4)
 
-    def test_summary_downloads_are_inside_line_cards_and_sections_are_removed(self):
+    def test_summary_only_selects_lines_without_details_or_downloads(self):
         app = AppTest.from_string(self.script, default_timeout=60).run()
         self.assertFalse(app.exception)
         self.assertEqual([b.label for b in app.button], ["Ver operaciones", "Ver operaciones"])
-        self.assertEqual(len(app.get("download_button")), 2)
-        self.assertEqual([m.value for m in app.metric], ["1", "0"])
+        self.assertEqual(len(app.get("download_button")), 0)
+        self.assertEqual([m.value for m in app.metric], ["4", "0"])
+        self.assertFalse(app.dataframe)
+        self.assertFalse(any(s.label == "Línea" for s in app.selectbox))
         self.assertFalse(any(r.label == "Sección" for r in app.radio))
         self.assertFalse(any(e.label == "Cómo interpretar los resultados" for e in app.expander))
         for block in app.get("download_button"):
@@ -190,13 +221,32 @@ class MapInterfaceTests(unittest.TestCase):
             app.radio(key="line_analysis").set_value(option).run()
             self.assertFalse(app.exception)
             self.assertEqual(app.header[0].value, "Mapa de operaciones")
-            self.assertFalse(any(e.proto.label == "Descargar indicadores de esta línea"
-                                 for e in app.get("download_button")))
+            self.assertEqual(sum(e.proto.label == "Descargar indicadores de esta línea"
+                                 for e in app.get("download_button")), 1)
         app.button(key="back_to_lines").click().run()
         self.assertFalse(app.exception)
-        self.assertEqual(app.header[0].value, "Una vista de cada línea")
+        self.assertEqual(app.header[0].value, "Elige una línea")
 
-    def test_priority_review_shows_reasons_above_map_and_survives_filters(self):
+    def test_line_selection_orders_by_problem_count_instead_of_name(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "data").mkdir()
+            source, config, *_ = fixture()
+            source.loc[source.Linea.eq("L1"), ["TBF", "TAP", "DES", "SAT", "NAP", "NPR"]] = [22, 0, 0, 0, 0, 1000]
+            source.loc[source.Linea.eq("L2"), ["TBF", "TAP", "DES", "SAT", "NAP", "NPR"]] = [10, 12, 0, 0, 1, 1000]
+            source.to_csv(root / "data" / "datos_hackaton.csv", index=False)
+            config.to_csv(root / "data" / "config_hackaton.csv", index=False)
+            script = Path("app.py").read_text(encoding="utf-8").replace(
+                "ROOT = Path(__file__).resolve().parent", f"ROOT = Path({str(root)!r})")
+            app = AppTest.from_string(script, default_timeout=60).run()
+            self.assertFalse(app.exception)
+            self.assertEqual([b.key for b in app.button], ["line_L2", "line_L1"])
+            self.assertEqual([m.value for m in app.metric], ["1", "0"])
+            app.button(key="line_L2").click().run()
+            self.assertFalse(app.exception)
+            self.assertEqual([b.label for b in app.button if b.key and b.key.startswith("operation_")], ["A"])
+
+    def test_priority_review_is_inside_line_below_map_and_survives_filters(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "data").mkdir()
@@ -212,13 +262,16 @@ class MapInterfaceTests(unittest.TestCase):
             script = Path("app.py").read_text(encoding="utf-8").replace(
                 "ROOT = Path(__file__).resolve().parent", f"ROOT = Path({str(root)!r})")
             app = AppTest.from_string(script, default_timeout=60).run()
-            self.assertIn("Revisión prioritaria", [s.value for s in app.subheader])
+            self.assertNotIn("Revisión prioritaria", [s.value for s in app.subheader])
             app.button(key="line_L1").click().run()
             self.assertFalse(app.exception)
             self.assertIn("Revisión prioritaria", [s.value for s in app.subheader])
+            self.assertEqual(app.header[0].value, "Mapa de operaciones")
             labels = [e.label for e in app.expander]
             for label in ["Sin producción · 1 máquinas", "Revisar datos · 1 máquinas", "Sin datos · 1 máquinas"]:
                 self.assertIn(label, labels)
+            review = next(e for e in app.expander if e.label == "Revisar datos · 1 máquinas")
+            self.assertEqual(len(review.get("image")), 1)
             self.assertIn("Otros", app.multiselect(key="map_filters").options)
             self.assertNotIn("Buen funcionamiento", app.multiselect(key="map_filters").options)
             self.assertTrue(any("Jefe de Unidad:" in m.value and "Mantenimiento:" in m.value for m in app.markdown))

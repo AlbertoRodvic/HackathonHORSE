@@ -77,6 +77,19 @@ tras sumar el periodo por operación. Con NAP cero queda sin definir. Si los con
 son incompatibles, se muestra la media con aviso y no se usa para clasificar posibles microparadas.
 Los colores resumen el periodo: no representan estados instantáneos ni demuestran causalidad.
 
+### Etiquetas de balance horario
+
+Cada registro conserva sus tiempos originales y recibe una etiqueta: **Exacto o compatible con
+redondeo**, **Déficit de tiempo**, **Exceso de tiempo** o **Sin tiempo asignado**. Se compara la suma
+TBF+TAP+DES+SAT con la referencia de la jornada (calendario o referencia general).
+La banda orientativa es ajustable en la barra lateral; por defecto, 1,2 minutos, hipótesis para
+cuatro campos redondeados a 0,01 horas. Estar en banda no certifica la corrección del registro.
+
+El mapa permite filtrar operaciones por balance sin quitar filas del análisis. El detalle muestra
+las etiquetas diarias, los desvíos y el número de jornadas a revisar, y permite descargar un CSV.
+**Calendario y calidad** resume las cuatro categorías por semanas y línea, incluidos los cierres.
+Los déficits y excesos se cuentan por día para que no se oculten al compensarse en el agregado.
+
 ### Mapa e informes PDF
 
 Al abrir una línea, la primera vista es el **Mapa de operaciones**: cajas completamente coloreadas,

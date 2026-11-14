@@ -7,7 +7,7 @@ import pandas as pd
 from analysis import Settings, analyse
 from cleaning import DAY_KEYS, ROW_KEYS, VALUES, prepare_data, select_scenario
 from diagnostics import (critical_candidates, impact_pairs, impact_summary, microstop_assessment,
-                         priority_figure, total_stops)
+                         investigation_figure, priority_figure, total_stops)
 
 
 class DiagnosticTests(unittest.TestCase):
@@ -98,6 +98,17 @@ class DiagnosticTests(unittest.TestCase):
         fig = priority_figure(result.operations, Settings())
         self.assertEqual(len(fig.axes), 5)
         self.assertEqual([t.get_text() for t in fig.axes[0].get_yticklabels()], ["A"])
+
+    def test_investigation_chart_keeps_review_machines_and_both_panels_aligned(self):
+        operations = pd.DataFrame({"Linea": ["L"] * 5, "Operacion": ["A", "B", "C", "D", "E"],
+                                   "availability_pct": [90, 20, 80, float("nan"), 70],
+                                   "TAP": [1, 12, 3, 4, 5], "DES": [2, 3, 4, 5, 6], "SAT": [0, 1, 2, 3, 4]})
+        fig = investigation_figure(operations, Settings())
+        self.assertEqual(len(fig.axes), 2)
+        self.assertEqual([tick.get_text() for tick in fig.axes[0].get_yticklabels()], ["B", "E", "C", "A", "D"])
+        self.assertEqual(len(fig.axes[1].patches), 15)
+        self.assertEqual(list(fig.axes[0].lines[0].get_xdata()), [90, 90])
+        self.assertIn("Sin disponibilidad definida", [text.get_text() for text in fig.axes[0].texts])
 
 
 if __name__ == "__main__":

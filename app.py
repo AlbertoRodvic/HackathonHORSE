@@ -5,6 +5,8 @@ from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
 
+import matplotlib
+matplotlib.use("Agg")  # Streamlit renderiza imágenes; no debe iniciar ventanas Tk.
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -12,10 +14,10 @@ import streamlit as st
 
 from analysis import (Settings, STATUS_COLORS, TIME_COLORS, analyse, order_operations, priorities,
                       OTHER_STATUSES, map_categories, propagation_evidence, state_explanation, validate_connections)
-from cleaning import DAY_KEYS, DAY_LABELS, FLAGS, TIMES, VALUES, prepare_data, select_scenario
+from cleaning import BALANCE_LABELS, DAY_KEYS, DAY_LABELS, FLAGS, TIMES, VALUES, prepare_data, select_scenario
 from reports import operation_report, technical_report, text_color
 from diagnostics import (critical_candidates, impact_pairs, impact_summary, microstop_assessment,
-                         priority_figure, total_stops)
+                         investigation_figure, priority_figure, total_stops)
 
 ROOT = Path(__file__).resolve().parent
 ANALYSES = ["Microparadas", "Evolución", "Calendario y calidad", "Reparto de tiempos por operación", "Pérdidas propias"]
@@ -29,7 +31,12 @@ METRIC_LABELS = {"Orden_OP": "Orden", "status": "Patrón", "availability_pct": "
                  "coverage_pct": "Cobertura (%)", "stop_pattern": "Patrón de duración",
                  "recommendation": "Qué revisar", "tap_hours_per_1000": "TAP h/1.000 piezas",
                  "recurrence_own": "Semanas TAP", "recurrence_des": "Semanas DES",
-                 "recurrence_sat": "Semanas SAT", "evaluable_week": "Semanas evaluables"}
+                 "recurrence_sat": "Semanas SAT", "evaluable_week": "Semanas evaluables",
+                 "balance_label": "Etiqueta de balance", "recorded_hours": "Horas registradas",
+                 "reference_hours": "Horas de referencia", "balance_delta_minutes": "Desvío (min)",
+                 "balance_ok_days": "Días en banda", "balance_deficit_days": "Días con déficit",
+                 "balance_excess_days": "Días con exceso", "balance_zero_days": "Días sin tiempo",
+                 "balance_review_days": "Días con balance por revisar"}
 FLAG_LABELS = dict(zip(FLAGS, ["Producción sin funcionamiento", "Funcionamiento sin producción",
                               "Paradas sin tiempo propio", "Tiempo propio sin paradas contadas"]))
 
@@ -88,6 +95,7 @@ def open_line(line):
     st.session_state["section"] = "Operaciones"
     st.session_state["selected_operation"] = None
     st.session_state["map_filters"] = []
+    st.session_state["map_balance_filter"] = "Todos"
 
 
 def open_summary():
@@ -114,29 +122,24 @@ def source_identity(upload, filename):
 
 
 def summary_view(result, configuration):
-    others_view(result.operations)
-    st.header("Una vista de cada línea")
-    for line in sorted(configuration.Linea.unique()):
+    st.header("Elige una línea")
+    st.caption("Líneas ordenadas de mayor a menor número de máquinas con problemas. "
+               "Cada máquina cuenta una vez si presenta una señal operativa o requiere revisar planificación o datos.")
+    problems = result.operations.loc[result.operations.status.ne("Buen funcionamiento")].groupby("Linea").size()
+    lines = sorted(configuration.Linea.unique(), key=lambda name: (-int(problems.get(name, 0)), str(name)))
+    for line in lines:
         operations = result.operations.loc[result.operations.Linea.eq(line)]
-        below = operations.loc[operations.eligible & operations.availability_pct.lt(90)]
-        color = STATUS_COLORS["Parada propia" if not below.empty else "Buen funcionamiento" if operations.eligible.any() else "Otros"]
+        color = STATUS_COLORS["Parada propia" if problems.get(line, 0) else "Buen funcionamiento" if operations.eligible.any() else "Otros"]
         with st.container(border=True):
             st.markdown(f'<div style="border-left:5px solid {color};padding-left:14px">'
                         f'<h3 style="margin:0">{escape(str(line))}</h3></div>', unsafe_allow_html=True)
-            st.metric("Máquinas con disponibilidad propia < 90%", len(below))
-            if not below.empty:
-                table(below[["Operacion", "availability_pct"]])
-            elif operations.empty:
+            st.metric("Máquinas con problemas", int(problems.get(line, 0)))
+            if operations.empty:
                 st.info("Sin jornadas incluidas para esta línea en el periodo y escenario seleccionados.")
-            else:
-                st.caption("Ninguna máquina evaluable tiene disponibilidad propia inferior al 90%.")
             st.button("Ver operaciones", key=f"line_{line}", on_click=open_line, args=(line,), type="primary")
-            st.download_button("Descargar indicadores de esta línea", operations.to_csv(index=False).encode("utf-8-sig"),
-                               file_name=f"indicadores_{line}.csv", mime="text/csv", key=f"download_line_{line}",
-                               disabled=operations.empty)
 
 
-def others_view(operations):
+def others_view(operations, settings):
     others = operations.loc[operations.status.isin(OTHER_STATUSES)]
     if others.empty:
         return
@@ -157,6 +160,10 @@ def others_view(operations):
             with st.expander(f"{label} · {len(group)} máquinas", expanded=True):
                 st.write("**Máquinas:** " + ", ".join(group.Operacion.astype(str)))
                 st.write(action)
+                if status == "Revisar datos":
+                    st.caption("Valores registrados pendientes de validar. La cobertura o coherencia de estos datos "
+                               "impide usarlos como diagnóstico definitivo; una disponibilidad indefinida no equivale a cero.")
+                    plot(investigation_figure(group, settings))
                 table(group[["Linea", "Operacion", "TBF", "TAP", "NPR", "coverage_pct",
                              "observed_days", "expected_days", "recommendation"]])
     st.divider()
@@ -171,6 +178,13 @@ def diagnostic(row, settings):
     cols[2].metric("Media por parada", number(row.mean_stop_minutes, " min", 2))
     cols[3].metric(f"Paradas / {settings.stop_rate_base} piezas", number(row.fpm))
     cols[4].metric("Ciclo de funcionamiento", number(row.cycle_cmin, " cmin"))
+    if row.balance_review_days > 0:
+        st.warning(f"Balance horario por revisar en {int(row.balance_review_days)} de {int(row.observed_days)} registros: "
+                   f"{int(row.balance_deficit_days)} con déficit, {int(row.balance_excess_days)} con exceso y "
+                   f"{int(row.balance_zero_days)} sin tiempo asignado. Los indicadores incluyen estos datos originales; "
+                   "no se ha rellenado ni recortado tiempo para ajustar la jornada.")
+    elif row.observed_days > 0:
+        st.caption("Todos los registros disponibles están en la banda orientativa de balance; esto no certifica la ausencia de otros errores.")
     if not row.stop_duration_reliable and pd.notna(row.mean_stop_minutes):
         st.warning("La media TAP/NAP se puede calcular, pero hay días con tiempos y contadores "
                    "incompatibles. No se usa para señalar posibles microparadas.")
@@ -181,8 +195,8 @@ def diagnostic(row, settings):
 
 
 def operations_view(operations, records, days, settings, scenario, connections, sources):
-    others_view(operations)
     st.header("Mapa de operaciones")
+    st.caption(f"Línea: {operations.Linea.iloc[0]}")
     st.caption("Cada caja es una operación. Desliza la fila o abre la vista completa; pulsa una caja para ver su diagnóstico debajo.")
     controls = st.columns([1.1, 1.8, 1.2])
     ordering = controls[0].selectbox("Ordenar por", ["Orden de línea", "Urgencia"], key="map_order")
@@ -196,6 +210,12 @@ def operations_view(operations, records, days, settings, scenario, connections, 
     visible = order_operations(operations, urgent=ordering == "Urgencia")
     if filters:
         visible = visible.loc[map_categories(visible).isin(filters)]
+    balance_filter = st.selectbox("Balance horario del mapa", ["Todos", "Con balance por revisar", "Operaciones completas en banda"], key="map_balance_filter")
+    if balance_filter == "Con balance por revisar":
+        visible = visible.loc[visible.balance_review_days.gt(0)]
+    elif balance_filter == "Operaciones completas en banda":
+        visible = visible.loc[visible.balance_review_days.eq(0) & visible.observed_days.gt(0) & visible.coverage_pct.eq(100)]
+    st.caption("El filtro de balance solo cambia las operaciones visibles: conserva los registros y los cálculos. Los colores siguen indicando el patrón operativo.")
     if "Zona" in visible and visible.Zona.notna().any():
         zone = st.selectbox("Zona documentada", ["Todas"] + sorted(visible.Zona.dropna().unique().tolist()))
         if zone != "Todas":
@@ -227,7 +247,7 @@ def operations_view(operations, records, days, settings, scenario, connections, 
         with st.container(key=key, width="stretch" if expanded else 142):
             st.button(str(row.Operacion), key=f"operation_{identity}", width="stretch",
                       on_click=open_operation, args=(row.Operacion,),
-                      help=f"{row['status']} · Orden {row.Orden_OP:g}")
+                      help=f"{row['status']} · Orden {row.Orden_OP:g} · Balance por revisar: {int(row.balance_review_days)}/{int(row.observed_days)} registros")
     if visible.empty:
         st.info("Ninguna operación cumple estos filtros. Quita un filtro para ampliar la vista.")
     elif expanded:
@@ -240,6 +260,11 @@ def operations_view(operations, records, days, settings, scenario, connections, 
             for _, row in visible.iterrows():
                 tile(row)
     st.markdown("<style>" + "".join(styles) + "</style>", unsafe_allow_html=True)
+    below = operations.loc[operations.eligible & operations.availability_pct.lt(settings.availability_target)]
+    if not below.empty:
+        st.subheader(f"Máquinas con disponibilidad propia < {settings.availability_target:g}% · {len(below)}")
+        plot(investigation_figure(below, settings))
+    others_view(operations, settings)
     if selected is None:
         st.info("Selecciona una operación en el mapa para ver su estado, evidencias y PDF de diagnóstico.")
     else:
@@ -257,7 +282,8 @@ def operations_view(operations, records, days, settings, scenario, connections, 
             evidence = propagation_evidence(row, records, settings, connections)
             table(evidence)
         st.subheader("Registros diarios de la operación seleccionada")
-        table(records.loc[records.Operacion.eq(selected), ["Source_Row"] + DAY_KEYS + ["Operacion"] + VALUES])
+        selected_records = records.loc[records.Operacion.eq(selected)]
+        hour_balance_view(selected_records, key="operation_balance")
 
 
 def own_losses_view(operations, records, settings, connections):
@@ -364,8 +390,38 @@ def evolution_view(result, line, operations, settings):
     table(operations[["Operacion", "recurrence_own", "recurrence_des", "recurrence_sat", "evaluable_week"]])
 
 
+def hour_balance_view(records, *, key):
+    """Etiquetas visibles y descargables; filtrar esta tabla no cambia el análisis."""
+    if records.empty:
+        st.info("No hay registros utilizables para comprobar el balance en este alcance.")
+        return
+    counts = records.balance_label.value_counts().reindex(BALANCE_LABELS, fill_value=0)
+    for column, label in zip(st.columns(4), BALANCE_LABELS):
+        column.metric(label, int(counts[label]))
+    bands = records.balance_band_minutes.unique()
+    st.caption(f"Balance = TBF + TAP + DES + SAT frente a la referencia de cada jornada. "
+               f"Banda orientativa: ±{number(float(bands[0]), ' min', 2)}. "
+               "Estar en banda no demuestra que el registro sea correcto. Sin tiempo asignado significa que las cuatro categorías suman cero.")
+    labels = st.multiselect("Etiquetas de balance visibles", list(BALANCE_LABELS), default=list(BALANCE_LABELS), key=f"{key}_labels")
+    detail = records.loc[records.balance_label.isin(labels)].sort_values(DAY_KEYS + ["Operacion"])
+    columns = ["Source_Row"] + DAY_KEYS + ["Operacion"] + VALUES + ["recorded_hours", "reference_hours", "balance_delta_minutes", "balance_label"]
+    table(detail[columns])
+    st.caption("Déficit: revisar categorías, jornada y captura. Exceso: revisar solapes, ventanas y unidades. "
+               "Tiempo cero: confirmar planificación o ausencia de captura. Ninguna etiqueta diagnostica por sí sola una avería.")
+    st.download_button("Descargar registros con etiqueta de balance", detail[columns].to_csv(index=False).encode("utf-8-sig"),
+                       file_name="balance_horario.csv", mime="text/csv", key=f"{key}_download")
+
+
 def quality_view(prepared, settings, weeks):
     st.header("Calendario y calidad de los datos")
+    st.subheader("Balance horario por registro")
+    balance_records, _ = select_scenario(prepared, "all", weeks)
+    balance_lines = ["Todas"] + sorted(prepared.configuration.Linea.unique().tolist())
+    scope_line = st.selectbox("Línea del balance horario", balance_lines, key="quality_balance_line")
+    if scope_line != "Todas":
+        balance_records = balance_records.loc[balance_records.Linea.eq(scope_line)]
+    st.caption("Semanas seleccionadas, incluyendo días sin actividad y cierres. Este bloque conserva todas las etiquetas para auditar el registro original.")
+    hour_balance_view(balance_records, key="quality_balance")
     st.info("Un festivo público no explica automáticamente un cierre de fábrica. "
             "Los días sin actividad se mantienen como causa pendiente hasta confirmar la planificación. "
             "Si un cierre indicado por el calendario tiene producción o funcionamiento registrado, "
@@ -494,6 +550,10 @@ def main():
             short = st.number_input("Parada breve: media inferior a (min)", 0.1, 10.0, 2.0)
             long = st.number_input("Parada prolongada: media desde (min)", 10.1, value=15.0)
             reference = st.number_input("Referencia de horas por jornada", 0.1, value=22.0)
+            balance_band = st.number_input("Banda orientativa de balance (min)", min_value=0.0, value=1.2, step=0.1, key="balance_band_minutes")
+            st.caption("1,2 min corresponde al límite conjunto si cuatro campos se redondean a 0,01 h. "
+                       "Si la precisión o las unidades de origen son distintas, ajusta la banda. "
+                       "Es una hipótesis, no una regla para descartar registros.")
             st.caption("Umbrales exploratorios ajustables; los percentiles se calculan dentro de cada línea y periodo.")
     settings = Settings(availability_target=availability, cycle_target_cmin=cycle,
                         loss_threshold_pct=loss, short_stop_minutes=short, long_stop_minutes=long)
@@ -501,7 +561,8 @@ def main():
         raw = input_csv(source, "datos_hackaton.csv", decimal)
         configuration = input_csv(config, "config_hackaton.csv", decimal)
         calendar = read_csv(calendar_file.getvalue(), decimal) if calendar_file else None
-        prepared = prepare_data(raw, configuration, calendar=calendar, time_unit=unit, reference_hours=reference)
+        prepared = prepare_data(raw, configuration, calendar=calendar, time_unit=unit, reference_hours=reference,
+                                balance_tolerance_hours=balance_band / 60)
         connections = validate_connections(read_csv(connections_file.getvalue(), decimal), prepared.configuration) if connections_file else None
         sources = {"Producción": source_identity(source, "datos_hackaton.csv"),
                    "Configuración": source_identity(config, "config_hackaton.csv"),
@@ -521,8 +582,8 @@ def main():
             st.error("La configuración no contiene líneas.")
             st.stop()
         if st.session_state.get("line") not in lines:
-            st.session_state["line"] = lines[0]
-        line = st.selectbox("Línea", lines, key="line", on_change=reset_operation)
+            st.session_state["section"] = "Resumen de líneas"
+        line = st.session_state.get("line")
         available_weeks = sorted({(int(row.Year), int(row.Week)) for row in prepared.days.itertuples()})
         weeks = st.multiselect("Semanas", available_weeks, default=available_weeks,
                                format_func=lambda value: f"{value[0]} · semana {value[1]}")
@@ -552,6 +613,8 @@ def main():
         line_records = records.loc[records.Linea.eq(line)]
         operations_view(operations, records.loc[records.Linea.eq(line)], days.loc[days.Linea.eq(line)], settings,
                         scenario_label, connections, sources)
+        st.download_button("Descargar indicadores de esta línea", operations.to_csv(index=False).encode("utf-8-sig"),
+                           file_name=f"indicadores_{line}.csv", mime="text/csv", key=f"download_line_{line}")
         st.divider()
         analysis = st.radio("Análisis de la línea", ANALYSES, horizontal=True, key="line_analysis")
         if analysis == "Microparadas":
